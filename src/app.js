@@ -11,6 +11,11 @@ const tenantRoutes = require('./routes/tenant');
 const userRoutes = require('./routes/user');
 const customerRoutes = require('./routes/customer');
 const opportunityRoutes = require('./routes/opportunity');
+const jobRoutes = require('./routes/job');
+const estimateRoutes = require('./routes/estimate');
+const catalogItemRoutes = require('./routes/catalogItem');
+const estimateTemplateRoutes = require('./routes/estimateTemplate');
+const publicEstimateRoutes = require('./routes/publicEstimate');
 
 /**
  * Builds and returns the Express app without starting a listener, so tests
@@ -45,6 +50,14 @@ function createApp() {
   app.use('/users', userRoutes);
   app.use('/customers', customerRoutes);
   app.use('/opportunities', opportunityRoutes);
+  app.use('/jobs', jobRoutes);
+  app.use('/estimates', estimateRoutes);
+  app.use('/catalog-items', catalogItemRoutes);
+  app.use('/estimate-templates', estimateTemplateRoutes);
+  // Public, unauthenticated customer-facing estimate view/approve/reject --
+  // deliberately mounted with no tenantResolver/requireAuth, see
+  // routes/publicEstimate.js for why that's safe.
+  app.use('/public/estimates', publicEstimateRoutes);
 
   // 404 handler
   app.use((req, res) => {

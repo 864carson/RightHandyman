@@ -5,6 +5,8 @@ const requirePermission = require('../middleware/requirePermission');
 const { PERMISSIONS } = require('../config/permissions');
 const CustomerRepository = require('../models/Customer');
 const OpportunityRepository = require('../models/Opportunity');
+const JobRepository = require('../models/Job');
+const EstimateRepository = require('../models/Estimate');
 
 const router = express.Router();
 
@@ -26,6 +28,13 @@ router.get('/:id/opportunities', requirePermission(PERMISSIONS.CUSTOMERS_READ), 
   const customer = CustomerRepository.findById(req.tenant.id, req.params.id);
   if (!customer) return res.status(404).json({ error: 'Customer not found' });
   res.json(OpportunityRepository.listByCustomer(req.tenant.id, customer.id));
+});
+
+/** Convenience: every job attached to a given customer -- the job:1234-style hub for that customer's history. */
+router.get('/:id/jobs', requirePermission(PERMISSIONS.CUSTOMERS_READ), (req, res) => {
+  const customer = CustomerRepository.findById(req.tenant.id, req.params.id);
+  if (!customer) return res.status(404).json({ error: 'Customer not found' });
+  res.json(JobRepository.listByCustomer(req.tenant.id, customer.id));
 });
 
 router.post('/', requirePermission(PERMISSIONS.CUSTOMERS_CREATE), (req, res) => {
@@ -57,8 +66,13 @@ router.patch('/:id', requirePermission(PERMISSIONS.CUSTOMERS_UPDATE), (req, res)
 router.delete('/:id', requirePermission(PERMISSIONS.CUSTOMERS_DELETE), (req, res) => {
   const removed = CustomerRepository.delete(req.tenant.id, req.params.id);
   if (!removed) return res.status(404).json({ error: 'Customer not found' });
-  // Cascade: a customer's opportunities don't make sense without it.
+  // Cascade: a customer's opportunities and jobs (and every estimate
+  // version under those jobs) don't make sense without the customer.
   OpportunityRepository.deleteAllForCustomer(req.tenant.id, req.params.id);
+  for (const job of JobRepository.listByCustomer(req.tenant.id, req.params.id)) {
+    EstimateRepository.deleteAllForJob(req.tenant.id, job.id);
+  }
+  JobRepository.deleteAllForCustomer(req.tenant.id, req.params.id);
   res.status(204).send();
 });
 
