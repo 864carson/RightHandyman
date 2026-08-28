@@ -1,2 +1,5 @@
-**/coverage/**/*
-**/node_modules/**/*
+node_modules/
+.env
+coverage/
+*.log
+.DS_Store
