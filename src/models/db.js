@@ -24,7 +24,16 @@ function createStore() {
     opportunities: new Map(), // id -> opportunity
     // `${tenantId}:${role}` -> string[] of permission keys, overriding the
     // built-in default for that role within this tenant
-    rolePermissionOverrides: new Map()
+    rolePermissionOverrides: new Map(),
+    jobs: new Map(), // id -> job
+    estimates: new Map(), // id -> estimate
+    // shareToken -> estimateId. Deliberately NOT tenant-scoped as a key --
+    // the token itself (unguessable, random) is the security boundary, the
+    // same pattern used for refreshTokens above. Looked up without knowing
+    // the tenant in advance, e.g. from a public customer-facing link.
+    estimatesByShareToken: new Map(),
+    catalogItems: new Map(), // id -> catalog item
+    estimateTemplates: new Map() // id -> estimate template
   };
 }
 

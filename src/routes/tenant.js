@@ -3,6 +3,10 @@ const TenantRepository = require('../models/Tenant');
 const UserRepository = require('../models/User');
 const CustomerRepository = require('../models/Customer');
 const OpportunityRepository = require('../models/Opportunity');
+const JobRepository = require('../models/Job');
+const EstimateRepository = require('../models/Estimate');
+const CatalogItemRepository = require('../models/CatalogItem');
+const EstimateTemplateRepository = require('../models/EstimateTemplate');
 const RolePermissions = require('../models/RolePermissions');
 const loadTenantParam = require('../middleware/loadTenantParam');
 const { requireAuth } = require('../middleware/auth');
@@ -60,11 +64,16 @@ router.patch('/:idOrSlug', loadTenantParam(), requireAuth, requirePermission(PER
 /**
  * DELETE /tenants/:idOrSlug
  * Deletes the tenant and everything in it (members, customers,
- * opportunities, permission overrides). Owner-only and NOT permission
- * overridable -- this is destructive and irreversible, and shouldn't be
- * something an owner can accidentally disable for themselves.
+ * opportunities, jobs, estimates, catalog, permission overrides). Owner-only
+ * and NOT permission overridable -- this is destructive and irreversible,
+ * and shouldn't be something an owner can accidentally disable for
+ * themselves.
  */
 router.delete('/:idOrSlug', loadTenantParam(), requireAuth, requireRole(['owner']), (req, res) => {
+  EstimateRepository.deleteAllForTenant(req.tenant.id);
+  JobRepository.deleteAllForTenant(req.tenant.id);
+  EstimateTemplateRepository.deleteAllForTenant(req.tenant.id);
+  CatalogItemRepository.deleteAllForTenant(req.tenant.id);
   OpportunityRepository.deleteAllForTenant(req.tenant.id);
   CustomerRepository.deleteAllForTenant(req.tenant.id);
   UserRepository.deleteAllForTenant(req.tenant.id);

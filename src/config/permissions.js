@@ -28,7 +28,29 @@ const PERMISSIONS = Object.freeze({
   MEMBERS_INVITE: 'members:invite',
   MEMBERS_REMOVE: 'members:remove',
 
-  TENANT_UPDATE: 'tenant:update'
+  TENANT_UPDATE: 'tenant:update',
+
+  JOBS_CREATE: 'jobs:create',
+  JOBS_READ: 'jobs:read',
+  JOBS_UPDATE: 'jobs:update',
+  JOBS_DELETE: 'jobs:delete',
+
+  ESTIMATES_CREATE: 'estimates:create',
+  ESTIMATES_READ: 'estimates:read',
+  ESTIMATES_UPDATE: 'estimates:update',
+  ESTIMATES_DELETE: 'estimates:delete',
+  // Recording that an estimate was sent, or the customer's approve/reject
+  // decision, is kept separate from plain field edits (estimates:update) --
+  // these are the actions with real business consequences (what the
+  // customer actually agreed to), so a tenant can grant edit rights more
+  // broadly than send/approve rights if it wants to.
+  ESTIMATES_SEND: 'estimates:send',
+  ESTIMATES_RECORD_RESPONSE: 'estimates:record-response',
+
+  // Catalog items and estimate templates are managed together -- they're
+  // both "the shared price book" from a permissions standpoint.
+  CATALOG_READ: 'catalog:read',
+  CATALOG_MANAGE: 'catalog:manage'
 });
 
 const ALL_PERMISSIONS = Object.freeze(Object.values(PERMISSIONS));
@@ -51,7 +73,19 @@ const DEFAULT_ROLE_PERMISSIONS = Object.freeze({
     PERMISSIONS.OPPORTUNITIES_DELETE,
     PERMISSIONS.MEMBERS_INVITE,
     PERMISSIONS.MEMBERS_REMOVE,
-    PERMISSIONS.TENANT_UPDATE
+    PERMISSIONS.TENANT_UPDATE,
+    PERMISSIONS.JOBS_CREATE,
+    PERMISSIONS.JOBS_READ,
+    PERMISSIONS.JOBS_UPDATE,
+    PERMISSIONS.JOBS_DELETE,
+    PERMISSIONS.ESTIMATES_CREATE,
+    PERMISSIONS.ESTIMATES_READ,
+    PERMISSIONS.ESTIMATES_UPDATE,
+    PERMISSIONS.ESTIMATES_DELETE,
+    PERMISSIONS.ESTIMATES_SEND,
+    PERMISSIONS.ESTIMATES_RECORD_RESPONSE,
+    PERMISSIONS.CATALOG_READ,
+    PERMISSIONS.CATALOG_MANAGE
   ],
   member: [
     PERMISSIONS.CUSTOMERS_CREATE,
@@ -59,7 +93,20 @@ const DEFAULT_ROLE_PERMISSIONS = Object.freeze({
     PERMISSIONS.CUSTOMERS_UPDATE,
     PERMISSIONS.OPPORTUNITIES_CREATE,
     PERMISSIONS.OPPORTUNITIES_READ,
-    PERMISSIONS.OPPORTUNITIES_UPDATE
+    PERMISSIONS.OPPORTUNITIES_UPDATE,
+    // Field estimators need full day-to-day estimating ability -- create,
+    // tweak, send, and record what the customer said -- without needing
+    // delete rights or catalog-management rights (that's an owner/admin
+    // "protect the price book" concern, not a field concern).
+    PERMISSIONS.JOBS_CREATE,
+    PERMISSIONS.JOBS_READ,
+    PERMISSIONS.JOBS_UPDATE,
+    PERMISSIONS.ESTIMATES_CREATE,
+    PERMISSIONS.ESTIMATES_READ,
+    PERMISSIONS.ESTIMATES_UPDATE,
+    PERMISSIONS.ESTIMATES_SEND,
+    PERMISSIONS.ESTIMATES_RECORD_RESPONSE,
+    PERMISSIONS.CATALOG_READ
   ]
 });
 

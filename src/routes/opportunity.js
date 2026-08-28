@@ -5,6 +5,7 @@ const requirePermission = require('../middleware/requirePermission');
 const { PERMISSIONS } = require('../config/permissions');
 const OpportunityRepository = require('../models/Opportunity');
 const CustomerRepository = require('../models/Customer');
+const { convertOpportunityToJob } = require('../controllers/estimateController');
 
 const router = express.Router();
 
@@ -65,6 +66,24 @@ router.delete('/:id', requirePermission(PERMISSIONS.OPPORTUNITIES_DELETE), (req,
   const removed = OpportunityRepository.delete(req.tenant.id, req.params.id);
   if (!removed) return res.status(404).json({ error: 'Opportunity not found' });
   res.status(204).send();
+});
+
+/**
+ * POST /opportunities/:id/convert-to-job  { title?, siteAddress?, description?, weatherSensitive?, weatherNotes?, notes?, photos? }
+ * Converts this opportunity into a Job (the hub that will hold its
+ * estimate(s), status, and eventually invoice). Marks the opportunity
+ * 'won' as part of the conversion if it wasn't already -- converting it IS
+ * the "we got the job" signal. Requires jobs:create, since the meaningful
+ * output of this action is a new Job.
+ */
+router.post('/:id/convert-to-job', requirePermission(PERMISSIONS.JOBS_CREATE), (req, res, next) => {
+  try {
+    const job = convertOpportunityToJob(req.tenant.id, req.params.id, req.body || {}, req.user.userId);
+    res.status(201).json(job);
+  } catch (err) {
+    err.status = err.status || 400;
+    next(err);
+  }
 });
 
 module.exports = router;
