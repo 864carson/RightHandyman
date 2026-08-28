@@ -9,7 +9,10 @@ function hashToken(token) {
 
 function parseDurationToMs(duration) {
   if (typeof duration === 'number') return duration * 1000;
-  const match = String(duration).match(/^(\d+)(s|m|h|d)?$/);
+  // Leading '-' is intentionally allowed: tests (and any caller that wants
+  // an already-expired token, e.g. for cleanup/expiry testing) construct
+  // one with a negative duration like '-1s'.
+  const match = String(duration).match(/^(-?\d+)(s|m|h|d)?$/);
   if (!match) throw new Error(`Invalid duration: ${duration}`);
   const n = parseInt(match[1], 10);
   const unit = match[2] || 's';
