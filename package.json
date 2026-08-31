@@ -1,5 +1,5 @@
 {
-  "name": "multi-tenant-auth-app",
+  "name": "right-handyman",
   "version": "1.0.0",
   "description": "Multi-tenant Node.js base app with multi-provider OAuth login (Google, GitHub) and JWT sessions",
   "main": "src/server.js",
