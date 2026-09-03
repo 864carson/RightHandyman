@@ -33,7 +33,11 @@ function createStore() {
     // the tenant in advance, e.g. from a public customer-facing link.
     estimatesByShareToken: new Map(),
     catalogItems: new Map(), // id -> catalog item
-    estimateTemplates: new Map() // id -> estimate template
+    estimateTemplates: new Map(), // id -> estimate template
+    // Append-only. reset() below still clears it (tests need a clean
+    // slate) -- what's deliberate is that DELETE /tenants/:id does NOT
+    // cascade-delete these, see models/AuditLog.js.
+    auditLogEntries: new Map()
   };
 }
 

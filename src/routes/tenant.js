@@ -7,6 +7,7 @@ const JobRepository = require('../models/Job');
 const EstimateRepository = require('../models/Estimate');
 const CatalogItemRepository = require('../models/CatalogItem');
 const EstimateTemplateRepository = require('../models/EstimateTemplate');
+const AuditLogRepository = require('../models/AuditLog');
 const RolePermissions = require('../models/RolePermissions');
 const loadTenantParam = require('../middleware/loadTenantParam');
 const { requireAuth } = require('../middleware/auth');
@@ -206,5 +207,18 @@ router.delete(
     res.json({ role: req.params.role, permissions: RolePermissions.getEffectivePermissions(req.tenant.id, req.params.role) });
   }
 );
+
+/**
+ * GET /tenants/:idOrSlug/impersonation-log
+ * Every recorded platform-support access to THIS tenant -- when a platform
+ * admin started an impersonation session, and every time they explicitly
+ * revealed redacted PII or financial data during one (see
+ * models/AuditLog.js, services/redaction.js). Owner-only: this is exactly
+ * the kind of transparency an owner should be able to check without
+ * having to ask support "did anyone look at my account".
+ */
+router.get('/:idOrSlug/impersonation-log', loadTenantParam(), requireAuth, requireRole(['owner']), (req, res) => {
+  res.json(AuditLogRepository.listForTargetTenant(req.tenant.id));
+});
 
 module.exports = router;

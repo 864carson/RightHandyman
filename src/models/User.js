@@ -45,6 +45,12 @@ class UserRepository {
       avatarUrl: avatarUrl || null,
       role: role && VALID_ROLES.includes(role) ? role : 'member',
       status: status && VALID_STATUSES.includes(status) ? status : 'active',
+      // Cross-tenant platform support access (see requirePlatformAdmin /
+      // routes/platformAdmin.js). Deliberately NOT settable via create()'s
+      // caller-supplied fields or the generic update() method below --
+      // the only way to flip this is setPlatformAdmin(), which nothing in
+      // the normal signup/invite/self-service flow ever calls.
+      platformAdmin: false,
       createdAt: new Date().toISOString()
     };
 
@@ -153,6 +159,22 @@ class UserRepository {
       store.usersByProviderIndex.delete(providerKey(tenantId, user.provider, user.providerId));
     }
     return true;
+  }
+
+  /**
+   * Grants or revokes platform-wide support access. Intentionally a
+   * separate method from update() -- there is no request body field or API
+   * route that maps to this, on purpose (see routes/platformAdmin.js for
+   * the one narrow, secret-gated way this actually gets set).
+   */
+  setPlatformAdmin(tenantId, id, value) {
+    const store = getStore();
+    const user = store.users.get(id);
+    if (!user || user.tenantId !== tenantId) return null;
+
+    user.platformAdmin = Boolean(value);
+    user.updatedAt = new Date().toISOString();
+    return user;
   }
 
   /** Removes every user in a tenant. Used when a tenant itself is deleted. */

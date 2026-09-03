@@ -7,6 +7,8 @@ const JobRepository = require('../models/Job');
 const CustomerRepository = require('../models/Customer');
 const OpportunityRepository = require('../models/Opportunity');
 const EstimateRepository = require('../models/Estimate');
+const AuditLogRepository = require('../models/AuditLog');
+const { redactEstimateFinancials } = require('../services/redaction');
 const { buildInternalView } = require('../controllers/estimateController');
 
 const router = express.Router();
@@ -40,10 +42,24 @@ router.get('/:id/estimates', requirePermission(PERMISSIONS.JOBS_READ), (req, res
   const job = JobRepository.findById(req.tenant.id, req.params.id);
   if (!job) return res.status(404).json({ error: 'Job not found' });
 
+  const reveal = req.query.reveal === 'true';
   const estimates = EstimateRepository.listByJob(req.tenant.id, job.id)
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
     .map(buildInternalView);
-  res.json(estimates);
+
+  if (!req.currentUser || !req.currentUser.impersonation) return res.json(estimates);
+
+  if (reveal && estimates.length > 0) {
+    AuditLogRepository.record({
+      actorUserId: req.user.userId,
+      actorHomeTenantId: req.user.impersonation.homeTenantId,
+      targetTenantId: req.tenant.id,
+      action: 'reveal_financials',
+      resourceType: 'job',
+      resourceId: job.id
+    });
+  }
+  res.json(estimates.map((e) => redactEstimateFinancials(e, { reveal })));
 });
 
 router.post('/', requirePermission(PERMISSIONS.JOBS_CREATE), (req, res, next) => {

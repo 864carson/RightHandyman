@@ -7,20 +7,45 @@ const CustomerRepository = require('../models/Customer');
 const OpportunityRepository = require('../models/Opportunity');
 const JobRepository = require('../models/Job');
 const EstimateRepository = require('../models/Estimate');
+const AuditLogRepository = require('../models/AuditLog');
+const { redactCustomerPII } = require('../services/redaction');
 
 const router = express.Router();
 
 router.use(tenantResolver());
 router.use(requireAuth);
 
+/**
+ * Redacts PII only during an impersonation session (req.currentUser.impersonation
+ * is set by requirePermission's impersonation fallback -- real tenant members
+ * never hit this branch at all). `?reveal=true` returns the real data and
+ * logs a `reveal_pii` audit entry against the target tenant.
+ */
+function presentCustomer(req, customer) {
+  if (!req.currentUser || !req.currentUser.impersonation) return customer;
+
+  const reveal = req.query.reveal === 'true';
+  if (reveal) {
+    AuditLogRepository.record({
+      actorUserId: req.user.userId,
+      actorHomeTenantId: req.user.impersonation.homeTenantId,
+      targetTenantId: req.tenant.id,
+      action: 'reveal_pii',
+      resourceType: 'customer',
+      resourceId: customer.id
+    });
+  }
+  return redactCustomerPII(customer, { reveal });
+}
+
 router.get('/', requirePermission(PERMISSIONS.CUSTOMERS_READ), (req, res) => {
-  res.json(CustomerRepository.listByTenant(req.tenant.id));
+  res.json(CustomerRepository.listByTenant(req.tenant.id).map((c) => presentCustomer(req, c)));
 });
 
 router.get('/:id', requirePermission(PERMISSIONS.CUSTOMERS_READ), (req, res) => {
   const customer = CustomerRepository.findById(req.tenant.id, req.params.id);
   if (!customer) return res.status(404).json({ error: 'Customer not found' });
-  res.json(customer);
+  res.json(presentCustomer(req, customer));
 });
 
 /** Convenience: every opportunity attached to a given customer. */
