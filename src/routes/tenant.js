@@ -19,6 +19,14 @@ const { inviteMember, removeMember } = require('../controllers/membershipControl
 const router = express.Router();
 
 /**
+ * GET /tenants
+ * Lists every tenant.
+ */
+router.get('/', requireAuth, (req, res) => {
+  res.json(TenantRepository.list());
+});
+
+/**
  * POST /tenants  { name, slug }
  * Creates a new tenant. In a real app this would be gated behind an admin
  * role / signup flow -- left open here since this is a base template.
