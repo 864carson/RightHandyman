@@ -194,6 +194,7 @@ tracking (the line item schema is generic enough to extend with an
 | GET | `/auth/:provider/callback` | none | OAuth callback → `{accessToken, refreshToken, user}` |
 | POST | `/auth/refresh` | refresh token in body | rotates and returns a new pair |
 | POST | `/auth/logout` | Bearer | revokes refresh token(s) + blocklists access token |
+| GET | `/tenants` | Bearer | list tenants
 | POST | `/tenants` | none | create a tenant `{name, slug}` |
 | GET | `/tenants/:idOrSlug` | none | fetch a tenant |
 | PATCH | `/tenants/:idOrSlug` | Bearer, `tenant:update` | update `{name?, slug?}` |
