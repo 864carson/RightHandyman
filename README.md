@@ -93,7 +93,82 @@ tenant rather than a hardcoded rule.
    blocklists the current access token's `jti` so it stops working
    immediately instead of lingering until its natural expiry.
 
-## How estimating works (jobs, estimates, catalog & templates)
+## Platform admin: cross-tenant support access
+
+A small number of people (your support/ops team) sometimes need to get
+into *any* tenant's account, not just their own -- a customer calling in
+with "my estimate totals look wrong" is the obvious case. This is
+deliberately a separate, narrow capability layered on top of the tenant
+isolation described above, not a backdoor that quietly bypasses it.
+
+**Who can do this.** A `platformAdmin: true` flag lives on a `User`
+record, same as any other user, in whatever tenant that person normally
+logs into (their "home" tenant). It is **never** settable through normal
+signup, invites, or `PATCH /users/:id` -- the only field-list that route
+accepts is `displayName`/`avatarUrl`/`role`/`status`. The one way to flip
+it over HTTP today is `POST /platform-admin/bootstrap-grant`, gated by a
+static secret (`PLATFORM_ADMIN_BOOTSTRAP_SECRET`) compared in constant
+time, not by "already being a platform admin" -- there has to be *some*
+way to create the first one. Treat that secret like a root/master key:
+set it just long enough to grant your initial admin(s), then unset it (or
+lock it down at the infra level) so the endpoint is effectively disabled
+day to day. Once you're on a real, persistent database instead of the
+in-memory store, the honest way to do this is a one-off script run
+directly against the DB (`UserRepository.setPlatformAdmin(tenantId, userId,
+true)`) -- the bootstrap endpoint exists specifically to cover the gap
+while there's no DB a script could reach.
+
+**What it lets them do.** `POST /platform-admin/impersonate {tenantId |
+tenantSlug, reason?}` (requires the caller's own token to already prove
+`platformAdmin: true`) issues a short-lived, **non-refreshable** access
+token scoped to the target tenant, with `impersonation: { active: true,
+actingRole: 'owner', homeTenantId }` signed into it. `requirePermission`
+and `requireRole` recognize that shape: if no real membership row exists
+for that user in the target tenant, they fall back to resolving
+permissions as if that user held `actingRole` there (still respecting that
+tenant's own permission overrides) instead of 401ing. This is full
+read+write, "act as a real member" access -- but nothing is written to the
+target tenant's member list; the platform admin never shows up in `GET
+/users` there, and the moment the token expires (10 minutes by default,
+`IMPERSONATION_TOKEN_EXPIRES_IN`), that access is gone until they call
+`/impersonate` again -- which re-checks `platformAdmin` from scratch, so a
+revoked flag takes effect on the very next session even if an old token
+happened to still be technically unexpired. If the platform admin also
+happens to be a genuine member of the target tenant, their real membership
+always wins over the impersonation claim -- impersonation is a fallback,
+never an override.
+
+**What's hidden by default.** During an impersonation session (never for a
+tenant's own real members), two response shapes come back redacted unless
+the caller explicitly asks otherwise with `?reveal=true`:
+- `GET /customers` / `GET /customers/:id` -- `email`/`phone` come back as
+  `"[hidden -- pass ?reveal=true]"` with a `piiRedacted: true` marker.
+- Anywhere an estimate's internal view is returned (`GET /estimates*`,
+  `GET /jobs/:id/estimates`, and every write-action response --
+  send/approve/reject/revise/etc., not just GETs) -- `cost`, `markupAmount`,
+  `markupValue`, `unitCost`, and `marginPercent` are stripped from every
+  line item and from the totals, with a `financialsRedacted: true` marker.
+  `price`, `totalPrice`, `tax`, `deposit`, and `balanceDue` are left
+  intact, since those are needed to actually operate the estimate
+  (approve/send it) without exposing the tenant's competitive cost/margin
+  numbers.
+
+Redaction is a default guardrail, not a hard wall -- support can still pass
+`?reveal=true` when they genuinely need the real numbers to help debug
+something. The difference is that doing so is never silent.
+
+**Nothing here is silent.** Every `POST /platform-admin/impersonate` call,
+and every individual `?reveal=true` request during that session, writes an
+entry to an append-only audit log (`models/AuditLog.js`) -- who, which
+tenant, what action, and (for impersonation) the `reason` string if one was
+given. `GET /tenants/:idOrSlug/impersonation-log` (owner-only, in the
+*target* tenant) lets that tenant's owner see exactly when platform staff
+accessed their account, without having to ask support directly. Unlike
+everything else in this app, the audit log is deliberately **not**
+cascade-deleted when a tenant is removed -- an audit trail should outlive
+the thing it's auditing.
+
+
 
 This is the estimating feature: create a job for a customer, build an
 estimate with line items (materials/labor/equipment/subcontract/travel),
@@ -206,6 +281,7 @@ tracking (the line item schema is generic enough to extend with an
 | GET | `/tenants/:idOrSlug/role-permissions` | Bearer, owner/admin | effective permission matrix for the tenant |
 | PUT | `/tenants/:idOrSlug/role-permissions/:role` | Bearer, owner (fixed) | replace a role's permissions `{permissions: string[]}` |
 | DELETE | `/tenants/:idOrSlug/role-permissions/:role` | Bearer, owner (fixed) | revert a role to its built-in default |
+| GET | `/tenants/:idOrSlug/impersonation-log` | Bearer, owner (fixed) | every platform-support access to THIS tenant (impersonation starts + PII/financial reveals) |
 | GET | `/users/me` | Bearer + `x-tenant-id` | current user |
 | GET | `/users/me/permissions` | Bearer + `x-tenant-id` | current user's role + effective permissions |
 | GET | `/users` | Bearer + `x-tenant-id` | list users in tenant |
@@ -256,6 +332,9 @@ tracking (the line item schema is generic enough to extend with an
 | POST | `/estimate-templates` | Bearer + `x-tenant-id`, `catalog:manage` | create `{trade, name, description?, lineItems: [...]}` |
 | PATCH | `/estimate-templates/:id` | Bearer + `x-tenant-id`, `catalog:manage` | update template fields |
 | DELETE | `/estimate-templates/:id` | Bearer + `x-tenant-id`, `catalog:manage` | delete a template |
+| POST | `/platform-admin/bootstrap-grant` | `x-bootstrap-secret` header (no JWT) | grant/revoke `platformAdmin` `{tenantId, userId, grant?}` — `503` if `PLATFORM_ADMIN_BOOTSTRAP_SECRET` unset |
+| GET | `/platform-admin/tenants` | Bearer (home tenant), platform admin | every tenant that exists |
+| POST | `/platform-admin/impersonate` | Bearer (home tenant), platform admin | issue a short-lived token scoped to another tenant `{tenantId \| tenantSlug, reason?}` |
 
 `stage` is one of `lead`, `qualified`, `proposal`, `won`, `lost` (default `lead`).
 `Job.status` is one of `estimating`, `approved`, `scheduled`, `in_progress`,
@@ -263,6 +342,13 @@ tracking (the line item schema is generic enough to extend with an
 `draft`, `sent`, `approved`, `rejected`, `expired`, `superseded`. Line item
 `category` is one of `materials`, `labor`, `equipment`, `subcontract`,
 `travel`, `other`; `markupType`/`depositType` is `percent` or `fixed`.
+
+**`?reveal=true`** — during an impersonation session only, add this to any
+`GET /customers`, `GET /customers/:id`, `GET /estimates*`, or `GET
+/jobs/:id/estimates` request to get back real (unredacted) data instead of
+the default `piiRedacted`/`financialsRedacted` view. Every reveal is
+audit-logged. Has no effect for a tenant's own real members — nothing is
+ever redacted for them in the first place.
 
 ## Project layout
 
@@ -277,12 +363,14 @@ src/
   controllers/membershipController.js Invite / remove tenant members
   controllers/estimateController.js   Job/estimate orchestration + internal vs. customer view builders
   services/estimateCalculations.js    Pure cost/markup/price/tax/deposit math (no side effects)
+  services/redaction.js               PII/financial redaction applied only during impersonation
   seed/estimateCatalogSeed.js         Starter catalog items + templates (landscaping + drainage)
   middleware/tenantResolver.js        Resolves req.tenant from header/subdomain
   middleware/loadTenantParam.js       Resolves req.tenant from a URL param
   middleware/auth.js                  Verifies JWT, checks blocklist, enforces tenant match
   middleware/requireRole.js           Role-gates a route (fixed roles, not overridable)
   middleware/requirePermission.js     Permission-gates a route (per-tenant overridable)
+  middleware/requirePlatformAdmin.js  Gates cross-tenant platform-admin-only routes
   models/db.js              In-memory store (swap this for a real DB)
   models/Tenant.js          Tenant repository (create/find/update/remove)
   models/User.js            User repository, tenant-scoped (create/update/delete/link)
@@ -292,19 +380,21 @@ src/
   models/Estimate.js         Estimate repository: versioning, status transitions, share tokens
   models/CatalogItem.js      Shared per-tenant price-book repository
   models/EstimateTemplate.js Packaged line-item bundles ("Weekly mow + edge", etc.)
+  models/AuditLog.js         Append-only log of impersonation + sensitive-data reveals
   models/RolePermissions.js Per-tenant permission overrides on top of the defaults
   models/RefreshToken.js    Refresh token repository (hashed at rest, rotated on use)
   models/TokenBlocklist.js  Revoked access-token jtis (for logout)
   routes/auth.js            OAuth init/callback, refresh, logout
-  routes/tenant.js          Tenant CRUD + membership invite/remove + permission management
+  routes/tenant.js          Tenant CRUD + membership invite/remove + permission management + impersonation log
   routes/user.js            User CRUD (self-service + admin)
-  routes/customer.js        Customer CRUD (permission-gated)
+  routes/customer.js        Customer CRUD (permission-gated, PII redacted during impersonation)
   routes/opportunity.js     Opportunity CRUD + convert-to-job (permission-gated)
   routes/job.js              Job CRUD + per-job estimate history (permission-gated)
-  routes/estimate.js         Estimate CRUD, revise/send/approve/reject (permission-gated)
+  routes/estimate.js         Estimate CRUD, revise/send/approve/reject (financials redacted during impersonation)
   routes/catalogItem.js      Catalog item CRUD + seed-defaults (permission-gated)
   routes/estimateTemplate.js Estimate template CRUD (permission-gated)
   routes/publicEstimate.js   Unauthenticated customer view/approve/reject by share token
+  routes/platformAdmin.js    Bootstrap grant, tenant listing, impersonation token issuance
   utils/jwt.js              sign/verify (adds a jti to every token)
   utils/oauthState.js       Encodes tenant context into OAuth `state`
 tests/
@@ -413,6 +503,39 @@ curl -X POST localhost:3000/estimates/<estimateId>/revise -H "x-tenant-id: acme"
   -d '{"asChangeOrder":true,"lineItems":[{"description":"Original scope item(s) here...","category":"materials","unit":"linear foot","quantity":50,"unitCost":1.8,"markupType":"percent","markupValue":35},{"description":"Extra 20ft of pipe (rock found)","category":"materials","unit":"linear foot","quantity":20,"unitCost":1.8,"markupType":"percent","markupValue":35}]}'
 ```
 
+**Platform admin / cross-tenant support access** (set
+`PLATFORM_ADMIN_BOOTSTRAP_SECRET` in `.env` first):
+
+```bash
+# 1. Grant yourself platform-admin on your own (already-logged-in) user --
+#    grab your userId from any authenticated response, e.g. GET /users/me:
+curl -X POST localhost:3000/platform-admin/bootstrap-grant \
+  -H "x-bootstrap-secret: <PLATFORM_ADMIN_BOOTSTRAP_SECRET>" -H 'Content-Type: application/json' \
+  -d '{"tenantId":"<yourHomeTenantId>","userId":"<yourUserId>"}'
+
+# 2. See every tenant that exists:
+curl localhost:3000/platform-admin/tenants -H "Authorization: Bearer <accessToken>"
+
+# 3. Impersonate a tenant you're not a member of -- note: your own normal
+#    accessToken here, not a tenant-specific one, since this route isn't
+#    tenant-resolved:
+curl -X POST localhost:3000/platform-admin/impersonate \
+  -H "Authorization: Bearer <accessToken>" -H 'Content-Type: application/json' \
+  -d '{"tenantSlug":"acme","reason":"customer support ticket #4321"}'
+# -> { "accessToken": "<impersonationToken>", "actingRole": "owner", "tenant": {...} }
+
+# 4. Use that token against the target tenant -- PII/financials come back
+#    redacted by default:
+curl localhost:3000/customers -H "x-tenant-id: acme" -H "Authorization: Bearer <impersonationToken>"
+curl "localhost:3000/estimates/<estimateId>" -H "x-tenant-id: acme" -H "Authorization: Bearer <impersonationToken>"
+
+# 5. Genuinely need the real numbers? Reveal them (audit-logged):
+curl "localhost:3000/customers/<customerId>?reveal=true" -H "x-tenant-id: acme" -H "Authorization: Bearer <impersonationToken>"
+
+# 6. As the target tenant's owner, see exactly when support accessed your account:
+curl localhost:3000/tenants/acme/impersonation-log -H "Authorization: Bearer <acmeOwnerAccessToken>"
+```
+
 ## Adding another provider
 
 1. `npm install passport-<provider>`
@@ -430,22 +553,29 @@ issuance are provider-agnostic.
 
 `src/models/db.js`, `Tenant.js`, `User.js`, `Customer.js`, `Opportunity.js`,
 `Job.js`, `Estimate.js`, `CatalogItem.js`, `EstimateTemplate.js`,
-`RolePermissions.js`, `RefreshToken.js`, and `TokenBlocklist.js` are the
-only files that know data is in-memory. Replace their internals with calls
-to your ORM/driver of choice (Prisma, Sequelize, a raw driver, etc.) while
-keeping the same method signatures, and nothing else in the app has to
-change. `RefreshToken` in particular should map cleanly to a real table
-(`tokenHash`, `tenantId`, `userId`, `expiresAt`, `revoked`); `TokenBlocklist`
-maps well to a Redis set with per-key TTL if you'd rather not use your
-primary DB for it. `RolePermissions` maps to a simple table keyed on
-`(tenantId, role)` with a `permissions` JSON/array column. `Estimate.lineItems`
-is stored as an embedded array (JSON column, or a document-DB subdocument)
-rather than a separate table — line items are always read/written together
-with their parent estimate and never queried independently, so normalizing
-them out would just add joins for no benefit; if you do move to a
-relational DB, a JSONB column (Postgres) is the natural fit, or a proper
-child table if you later need to query across line items directly (e.g.
-"total spent on mulch across all estimates").
+`AuditLog.js`, `RolePermissions.js`, `RefreshToken.js`, and
+`TokenBlocklist.js` are the only files that know data is in-memory. Replace
+their internals with calls to your ORM/driver of choice (Prisma, Sequelize,
+a raw driver, etc.) while keeping the same method signatures, and nothing
+else in the app has to change. `RefreshToken` in particular should map
+cleanly to a real table (`tokenHash`, `tenantId`, `userId`, `expiresAt`,
+`revoked`); `TokenBlocklist` maps well to a Redis set with per-key TTL if
+you'd rather not use your primary DB for it. `RolePermissions` maps to a
+simple table keyed on `(tenantId, role)` with a `permissions` JSON/array
+column. `AuditLog` should be its own table with **no cascading foreign key**
+back to `tenants` (or a nullable/non-enforced reference) -- the whole point
+is that it survives a tenant being deleted; a real `ON DELETE CASCADE`
+would silently defeat that. `Estimate.lineItems` is stored as an embedded
+array (JSON column, or a document-DB subdocument) rather than a separate
+table — line items are always read/written together with their parent
+estimate and never queried independently, so normalizing them out would
+just add joins for no benefit; if you do move to a relational DB, a JSONB
+column (Postgres) is the natural fit, or a proper child table if you later
+need to query across line items directly (e.g. "total spent on mulch
+across all estimates"). Once `User` is backed by a real DB, prefer setting
+`platformAdmin` with a one-off script/migration run directly against it
+over relying on `POST /platform-admin/bootstrap-grant` long-term (see
+"Platform admin" section above).
 
 ## Notes / things to harden before production
 
@@ -498,3 +628,29 @@ child table if you later need to query across line items directly (e.g.
 - The in-memory `TokenBlocklist` and `refreshTokens` map never get swept —
   fine for a demo, but a real deployment should periodically purge expired
   entries (or rely on TTLs if you move this to Redis).
+- **`PLATFORM_ADMIN_BOOTSTRAP_SECRET` grants a very powerful capability if
+  leaked** — anyone holding it can mint themselves a platform admin and
+  from there impersonate every tenant. Set it only when actively granting
+  an admin, keep it out of shell history/CI logs, and prefer the
+  direct-DB-script approach once you have a persistent database (see
+  "Swapping the in-memory store").
+- **The audit log has no pagination, retention policy, or export.** It's
+  an unbounded in-memory map that only grows — fine for the volumes here,
+  but a real deployment should paginate `GET /tenants/:id/impersonation-log`,
+  decide how long entries are kept, and probably ship them to a proper
+  logging/SIEM system rather than querying the primary store for them.
+- **No proactive notification when impersonation starts.** A tenant owner
+  can *check* `GET /tenants/:idOrSlug/impersonation-log`, but nothing
+  emails/notifies them in the moment — consider firing a webhook or
+  notification on every `impersonation_start` if real-time visibility
+  matters to your customers.
+- **Impersonation always acts as `owner`**, not a configurable/lesser role
+  — simplest for support to actually be useful, but means every
+  impersonation session has full access within the target tenant. If you
+  need finer-grained support roles (e.g. "read-only support" vs "full
+  support"), `actingRole` in `routes/platformAdmin.js` is the one place
+  that would need to become a parameter instead of a hardcoded `'owner'`.
+- **`reason` on `POST /platform-admin/impersonate` is optional, not
+  required.** Every session is still logged either way, but if you want to
+  force support staff to state why before they can access an account,
+  make it a required field in that route.

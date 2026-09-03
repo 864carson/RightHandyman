@@ -16,6 +16,7 @@ const estimateRoutes = require('./routes/estimate');
 const catalogItemRoutes = require('./routes/catalogItem');
 const estimateTemplateRoutes = require('./routes/estimateTemplate');
 const publicEstimateRoutes = require('./routes/publicEstimate');
+const platformAdminRoutes = require('./routes/platformAdmin');
 
 /**
  * Builds and returns the Express app without starting a listener, so tests
@@ -58,6 +59,9 @@ function createApp() {
   // deliberately mounted with no tenantResolver/requireAuth, see
   // routes/publicEstimate.js for why that's safe.
   app.use('/public/estimates', publicEstimateRoutes);
+  // Cross-tenant platform-support access -- deliberately NOT under
+  // tenantResolver (see routes/platformAdmin.js for why).
+  app.use('/platform-admin', platformAdminRoutes);
 
   // 404 handler
   app.use((req, res) => {
