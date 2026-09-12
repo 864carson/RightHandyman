@@ -1,5 +1,6 @@
 const { randomUUID } = require('crypto');
 const { getStore } = require('./db');
+const { hashToken } = require('../utils/tokenHash');
 const {
   LINE_ITEM_CATEGORIES,
   MARKUP_TYPES,
@@ -15,6 +16,21 @@ const ESTIMATE_STATUSES = ['draft', 'sent', 'approved', 'rejected', 'expired', '
 function computeValidUntil(fromIso, validDays) {
   const days = typeof validDays === 'number' ? validDays : DEFAULT_VALID_DAYS;
   return new Date(new Date(fromIso).getTime() + days * 24 * 60 * 60 * 1000).toISOString();
+}
+
+/**
+ * Issues a fresh raw share token, stores only its hash + indexes the store
+ * by that hash, and returns the raw value. The raw token is NEVER
+ * persisted anywhere -- same reasoning as RefreshToken -- so it can only
+ * ever be read back at the moment it's issued (create/revise/regenerate).
+ * If it's lost, the fix is POST /estimates/:id/regenerate-link, not
+ * recovering the old one.
+ */
+function issueShareToken(store, estimateId) {
+  const raw = randomUUID();
+  const hash = hashToken(raw);
+  store.estimatesByShareTokenHash.set(hash, estimateId);
+  return { raw, hash };
 }
 
 /** Validates and fills in defaults for one line item. Throws on bad input. */
@@ -103,6 +119,7 @@ class EstimateRepository {
     const id = randomUUID();
     const now = new Date();
     const resolvedValidDays = typeof validDays === 'number' ? validDays : DEFAULT_VALID_DAYS;
+    const { raw: rawShareToken, hash: shareTokenHash } = issueShareToken(store, id);
 
     const estimate = {
       id,
@@ -126,24 +143,25 @@ class EstimateRepository {
       notes: notes || null,
       validDays: resolvedValidDays,
       validUntil: computeValidUntil(now.toISOString(), resolvedValidDays),
-      // Unguessable token for the public, unauthenticated customer link --
-      // same opaque-token approach this app already uses for refresh
-      // tokens. Regenerated on every new version (see createRevision) so an
-      // old link a customer may have bookmarked never silently starts
-      // showing different numbers.
-      shareToken: randomUUID(),
+      // Only the HASH is persisted -- see issueShareToken() above and
+      // utils/tokenHash.js. The raw token is attached to the object
+      // returned below (this one call only); it is never stored and can't
+      // be read back later via findById/findByShareToken.
+      shareTokenHash,
+      viewedAt: null,
+      viewCount: 0,
       sentAt: null,
       approvedAt: null,
       approvedBy: null,
       rejectedAt: null,
+      rejectedBy: null,
       rejectionReason: null,
       createdBy: createdBy || null,
       createdAt: now.toISOString()
     };
 
     store.estimates.set(id, estimate);
-    store.estimatesByShareToken.set(estimate.shareToken, id);
-    return estimate;
+    return { ...estimate, shareToken: rawShareToken };
   }
 
   findById(tenantId, id) {
@@ -157,12 +175,52 @@ class EstimateRepository {
    * Looks up an estimate by its public share token, with NO tenant check --
    * this is what the unauthenticated customer-facing link uses, where the
    * caller doesn't (and shouldn't need to) know which tenant it belongs to.
-   * The token's randomness is the security boundary here, not tenant scoping.
+   * Hashes the raw token before lookup, since only the hash is persisted
+   * (see issueShareToken above); the estimate object returned here never
+   * has a `.shareToken` field, only `.shareTokenHash`.
    */
   findByShareToken(shareToken) {
+    if (!shareToken) return null;
     const store = getStore();
-    const id = store.estimatesByShareToken.get(shareToken);
+    const id = store.estimatesByShareTokenHash.get(hashToken(shareToken));
     return id ? store.estimates.get(id) : null;
+  }
+
+  /**
+   * Records that the public link was opened -- sets viewedAt on first view
+   * only (never overwritten after), and increments viewCount every time.
+   * Deliberately a separate explicit call rather than something findById
+   * does automatically, so internal/staff lookups of the same estimate
+   * never count as a "view" -- only the actual public link does.
+   */
+  recordView(tenantId, id) {
+    const store = getStore();
+    const estimate = store.estimates.get(id);
+    if (!estimate || estimate.tenantId !== tenantId) return null;
+
+    if (!estimate.viewedAt) estimate.viewedAt = new Date().toISOString();
+    estimate.viewCount = (estimate.viewCount || 0) + 1;
+    return estimate;
+  }
+
+  /**
+   * Issues a brand new share token for an existing estimate and retires
+   * the old one immediately (it stops resolving at all, rather than
+   * quietly staying valid) -- the fix for "the customer lost the email",
+   * without needing to revise the estimate's content just to get a new
+   * link. Allowed in any status; regenerating a link never changes what
+   * the estimate says or its approval state.
+   */
+  regenerateShareLink(tenantId, id) {
+    const store = getStore();
+    const estimate = store.estimates.get(id);
+    if (!estimate || estimate.tenantId !== tenantId) return null;
+
+    store.estimatesByShareTokenHash.delete(estimate.shareTokenHash);
+    const { raw, hash } = issueShareToken(store, id);
+    estimate.shareTokenHash = hash;
+    estimate.updatedAt = new Date().toISOString();
+    return { ...estimate, shareToken: raw };
   }
 
   listByJob(tenantId, jobId) {
@@ -261,6 +319,7 @@ class EstimateRepository {
     const newId = randomUUID();
     const now = new Date();
     const resolvedValidDays = updates.validDays !== undefined ? updates.validDays : parent.validDays;
+    const { raw: rawShareToken, hash: shareTokenHash } = issueShareToken(store, newId);
 
     const revision = {
       ...parent,
@@ -283,11 +342,14 @@ class EstimateRepository {
       notes: updates.notes !== undefined ? updates.notes : parent.notes,
       validDays: resolvedValidDays,
       validUntil: computeValidUntil(now.toISOString(), resolvedValidDays),
-      shareToken: randomUUID(),
+      shareTokenHash,
+      viewedAt: null,
+      viewCount: 0,
       sentAt: null,
       approvedAt: null,
       approvedBy: null,
       rejectedAt: null,
+      rejectedBy: null,
       rejectionReason: null,
       createdBy: updates.createdBy || parent.createdBy,
       createdAt: now.toISOString(),
@@ -296,13 +358,12 @@ class EstimateRepository {
     delete revision.updatedAt;
 
     store.estimates.set(newId, revision);
-    store.estimatesByShareToken.set(revision.shareToken, newId);
 
     parent.supersededBy = newId;
     if (parent.status !== 'approved') parent.status = 'superseded';
     parent.updatedAt = now.toISOString();
 
-    return revision;
+    return { ...revision, shareToken: rawShareToken };
   }
 
   /** draft -> sent. Re-baselines the validity window from the moment it's actually sent. */
@@ -325,10 +386,14 @@ class EstimateRepository {
   /**
    * draft|sent -> approved. Allowed from 'draft' too (not just 'sent') to
    * cover verbal/in-person approval that staff record on the spot without a
-   * formal send step first. `approvedBy` is free-text name/signature, not a
-   * User record -- the customer approving generally has no account here.
+   * formal send step first. `approvedBy` is free-text name/email/signature,
+   * not a User record -- the customer approving generally has no account
+   * here. For the full legal audit trail of a customer's own acceptance
+   * (IP, user agent, exact token used), see models/EstimateAcceptance.js --
+   * this field only reflects the estimate's current state, and gets
+   * replaced if the estimate is later revised.
    */
-  approve(tenantId, id, { approvedByName, signatureText } = {}) {
+  approve(tenantId, id, { approvedByName, approvedByEmail, signatureText } = {}) {
     const store = getStore();
     const estimate = store.estimates.get(id);
     if (!estimate || estimate.tenantId !== tenantId) return null;
@@ -339,13 +404,13 @@ class EstimateRepository {
     const now = new Date();
     estimate.status = 'approved';
     estimate.approvedAt = now.toISOString();
-    estimate.approvedBy = { name: approvedByName || null, signatureText: signatureText || null };
+    estimate.approvedBy = { name: approvedByName || null, email: approvedByEmail || null, signatureText: signatureText || null };
     estimate.updatedAt = now.toISOString();
     return estimate;
   }
 
   /** draft|sent -> rejected. */
-  reject(tenantId, id, { reason } = {}) {
+  reject(tenantId, id, { reason, rejectedByName, rejectedByEmail } = {}) {
     const store = getStore();
     const estimate = store.estimates.get(id);
     if (!estimate || estimate.tenantId !== tenantId) return null;
@@ -356,6 +421,7 @@ class EstimateRepository {
     const now = new Date();
     estimate.status = 'rejected';
     estimate.rejectedAt = now.toISOString();
+    estimate.rejectedBy = { name: rejectedByName || null, email: rejectedByEmail || null };
     estimate.rejectionReason = reason || null;
     estimate.updatedAt = now.toISOString();
     return estimate;
@@ -385,7 +451,7 @@ class EstimateRepository {
     }
 
     store.estimates.delete(id);
-    store.estimatesByShareToken.delete(estimate.shareToken);
+    store.estimatesByShareTokenHash.delete(estimate.shareTokenHash);
     return true;
   }
 
@@ -395,7 +461,7 @@ class EstimateRepository {
     let count = 0;
     for (const estimate of this.listByJob(tenantId, jobId)) {
       store.estimates.delete(estimate.id);
-      store.estimatesByShareToken.delete(estimate.shareToken);
+      store.estimatesByShareTokenHash.delete(estimate.shareTokenHash);
       count += 1;
     }
     return count;
@@ -407,7 +473,7 @@ class EstimateRepository {
     let count = 0;
     for (const estimate of this.listByTenant(tenantId)) {
       store.estimates.delete(estimate.id);
-      store.estimatesByShareToken.delete(estimate.shareToken);
+      store.estimatesByShareTokenHash.delete(estimate.shareTokenHash);
       count += 1;
     }
     return count;

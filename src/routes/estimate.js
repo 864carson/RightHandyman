@@ -189,6 +189,20 @@ router.post('/:id/reject', requirePermission(PERMISSIONS.ESTIMATES_RECORD_RESPON
   }
 });
 
+/**
+ * POST /estimates/:id/regenerate-link
+ * Issues a fresh share token and immediately retires the old one -- the
+ * fix for "the customer lost the email" without needing to revise the
+ * estimate's content just to get a new link. Works regardless of status;
+ * regenerating the link never changes what the estimate says or its
+ * approval state, only which token resolves to it.
+ */
+router.post('/:id/regenerate-link', requirePermission(PERMISSIONS.ESTIMATES_UPDATE), (req, res) => {
+  const regenerated = EstimateRepository.regenerateShareLink(req.tenant.id, req.params.id);
+  if (!regenerated) return res.status(404).json({ error: 'Estimate not found' });
+  res.json(presentEstimate(req, estimateController.buildInternalView(regenerated)));
+});
+
 /** Only a never-sent draft can be deleted outright -- anything else is a business record (reject it instead). */
 router.delete('/:id', requirePermission(PERMISSIONS.ESTIMATES_DELETE), (req, res, next) => {
   try {

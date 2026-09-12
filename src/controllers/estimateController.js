@@ -2,11 +2,23 @@ const JobRepository = require('../models/Job');
 const EstimateRepository = require('../models/Estimate');
 const EstimateTemplateRepository = require('../models/EstimateTemplate');
 const OpportunityRepository = require('../models/Opportunity');
+const EstimateAcceptanceRepository = require('../models/EstimateAcceptance');
 const { calculateEstimateTotals } = require('../services/estimateCalculations');
 const { isPastValidity } = require('../models/Estimate');
 
 function notFound(message) {
   return Object.assign(new Error(message), { status: 404 });
+}
+
+/**
+ * Full clickable link for a share token, only computable at the moment
+ * the raw token is actually available (right after create/revise/
+ * regenerate -- see models/Estimate.js) and only if PUBLIC_APP_URL is
+ * configured. Returns null otherwise rather than guessing at a base URL.
+ */
+function buildShareUrl(estimate) {
+  if (!estimate.shareToken || !process.env.PUBLIC_APP_URL) return null;
+  return `${process.env.PUBLIC_APP_URL.replace(/\/+$/, '')}/public/estimates/${estimate.shareToken}`;
 }
 
 /**
@@ -20,6 +32,11 @@ function buildInternalView(estimate) {
     ...estimate,
     lineItems: totals.lineItems, // resolved: cost/markupAmount/price/marginPercent per line
     effectiveStatus: isPastValidity(estimate) ? 'expired' : estimate.status,
+    // Only present right after create/revise/regenerate-link, when the raw
+    // token is still attached to the object -- a normal GET-by-id never
+    // has it (see models/Estimate.js), so this is naturally null on every
+    // subsequent fetch, not just omitted.
+    shareUrl: buildShareUrl(estimate),
     totals: {
       totalCost: totals.totalCost,
       totalMarkup: totals.totalMarkup,
@@ -160,6 +177,50 @@ function recordRejection(tenantId, id, payload) {
 }
 
 /**
+ * Records a customer's own accept/reject action from the public share
+ * link. Always writes a permanent entry to the EstimateAcceptance ledger
+ * (see models/EstimateAcceptance.js) in addition to updating the
+ * estimate's own approvedBy/rejectedBy via recordApproval/recordRejection.
+ *
+ * Idempotent by design: if the SAME action is repeated on an estimate
+ * that's already in that state (double-click, page refresh, a retried
+ * network request), this returns the ORIGINAL acceptance event instead of
+ * erroring or recording a duplicate one -- `idempotent: true` in the
+ * result tells the caller nothing new happened. A genuinely conflicting
+ * action (e.g. trying to accept something already rejected) still throws
+ * the usual 409 from EstimateRepository.approve/reject, unchanged.
+ */
+function recordAcceptanceEvent(tenantId, id, { action, name, email, ipAddress, userAgent, tokenLast8, reason } = {}) {
+  const estimate = EstimateRepository.findById(tenantId, id);
+  if (!estimate) throw notFound('Estimate not found');
+
+  const alreadyDoneStatus = action === 'accepted' ? 'approved' : 'rejected';
+  if (estimate.status === alreadyDoneStatus) {
+    const existing = EstimateAcceptanceRepository.findLatestForEstimate(tenantId, id, action);
+    return { estimate, acceptance: existing, idempotent: true };
+  }
+
+  const updatedEstimate =
+    action === 'accepted'
+      ? recordApproval(tenantId, id, { approvedByName: name, approvedByEmail: email })
+      : recordRejection(tenantId, id, { reason, rejectedByName: name, rejectedByEmail: email });
+
+  const acceptance = EstimateAcceptanceRepository.record({
+    tenantId,
+    estimateId: id,
+    action,
+    name,
+    email,
+    ipAddress,
+    userAgent,
+    tokenLast8,
+    reason
+  });
+
+  return { estimate: updatedEstimate, acceptance, idempotent: false };
+}
+
+/**
  * Converts a won (or about-to-be-won) Opportunity into a Job. Marks the
  * opportunity 'won' as part of the conversion if it wasn't already --
  * converting it IS the "we got the job" signal.
@@ -195,5 +256,6 @@ module.exports = {
   reviseEstimate,
   recordApproval,
   recordRejection,
+  recordAcceptanceEvent,
   convertOpportunityToJob
 };

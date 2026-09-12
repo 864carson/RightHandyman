@@ -8,6 +8,7 @@ const OpportunityRepository = require('../../src/models/Opportunity');
 const JobRepository = require('../../src/models/Job');
 const EstimateRepository = require('../../src/models/Estimate');
 const EstimateTemplateRepository = require('../../src/models/EstimateTemplate');
+const EstimateAcceptanceRepository = require('../../src/models/EstimateAcceptance');
 const CatalogItemRepository = require('../../src/models/CatalogItem');
 const { signToken } = require('../../src/utils/jwt');
 const createApp = require('../../src/app');
@@ -456,9 +457,11 @@ describe('Public (unauthenticated) customer-facing estimate routes', () => {
   let customer;
   let job;
   let estimate;
+  const publicEstimateRouter = require('../../src/routes/publicEstimate');
 
   beforeEach(() => {
     reset();
+    publicEstimateRouter.resetRateLimits();
     tenant = TenantRepository.create({ name: 'Acme Inc', slug: 'acme' });
     customer = CustomerRepository.create({ tenantId: tenant.id, name: 'Jane Homeowner' });
     job = JobRepository.create({ tenantId: tenant.id, customerId: customer.id, title: 'Mulch bed refresh' });
@@ -493,10 +496,15 @@ describe('Public (unauthenticated) customer-facing estimate routes', () => {
   });
 
   test('POST /public/estimates/:shareToken/reject records a reason, with no auth', async () => {
-    const res = await request(app).post(`/public/estimates/${estimate.shareToken}/reject`).send({ reason: 'Too expensive' });
+    const res = await request(app).post(`/public/estimates/${estimate.shareToken}/reject`).send({ name: 'Jane Homeowner', reason: 'Too expensive' });
 
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('rejected');
+  });
+
+  test('POST /public/estimates/:shareToken/reject requires a typed name', async () => {
+    const res = await request(app).post(`/public/estimates/${estimate.shareToken}/reject`).send({ reason: 'Too expensive' });
+    expect(res.status).toBe(400);
   });
 
   test('approve returns 410 once the estimate is past its validity window', async () => {
@@ -513,5 +521,120 @@ describe('Public (unauthenticated) customer-facing estimate routes', () => {
     expect(serialized).not.toMatch(/markupAmount/);
     expect(serialized).not.toMatch(/marginPercent/);
     expect(serialized).not.toMatch(/unitCost/);
+  });
+
+  test('POST /public/estimates/:shareToken/approve requires a typed name', async () => {
+    const res = await request(app).post(`/public/estimates/${estimate.shareToken}/approve`).send({ email: 'jane@example.com' });
+    expect(res.status).toBe(400);
+  });
+
+  test('accepts the approvedByName alias for backward compatibility', async () => {
+    const res = await request(app).post(`/public/estimates/${estimate.shareToken}/approve`).send({ approvedByName: 'Jane Homeowner' });
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('approved');
+  });
+
+  test('records a permanent EstimateAcceptance entry with name/email/IP/user-agent/token', async () => {
+    await request(app)
+      .post(`/public/estimates/${estimate.shareToken}/approve`)
+      .set('User-Agent', 'IntegrationTestAgent/1.0')
+      .send({ name: 'Jane Homeowner', email: 'jane@example.com' });
+
+    const ledger = EstimateAcceptanceRepository.listForEstimate(tenant.id, estimate.id);
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0].action).toBe('accepted');
+    expect(ledger[0].name).toBe('Jane Homeowner');
+    expect(ledger[0].email).toBe('jane@example.com');
+    expect(ledger[0].userAgent).toBe('IntegrationTestAgent/1.0');
+    expect(ledger[0].ipAddress).toBeDefined();
+    expect(ledger[0].tokenLast8).toBe(estimate.shareToken.slice(-8));
+    expect(ledger[0].signatureType).toBe('typed_name');
+  });
+
+  test('a repeated accept (double-click) is idempotent -- same result, no duplicate ledger entry', async () => {
+    const first = await request(app).post(`/public/estimates/${estimate.shareToken}/approve`).send({ name: 'Jane Homeowner' });
+    const second = await request(app).post(`/public/estimates/${estimate.shareToken}/approve`).send({ name: 'Jane Homeowner' });
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(second.body.status).toBe('approved');
+    expect(EstimateAcceptanceRepository.listForEstimate(tenant.id, estimate.id)).toHaveLength(1);
+  });
+
+  test('trying to reject something already accepted is a genuine conflict, not idempotent', async () => {
+    await request(app).post(`/public/estimates/${estimate.shareToken}/approve`).send({ name: 'Jane Homeowner' });
+    const res = await request(app).post(`/public/estimates/${estimate.shareToken}/reject`).send({ name: 'Jane Homeowner', reason: 'changed my mind' });
+    expect(res.status).toBe(409);
+  });
+
+  test('GET records a view (viewedAt/viewCount visible on the internal view, not the public one)', async () => {
+    await request(app).get(`/public/estimates/${estimate.shareToken}`);
+    await request(app).get(`/public/estimates/${estimate.shareToken}`);
+
+    const internal = EstimateRepository.findById(tenant.id, estimate.id);
+    expect(internal.viewCount).toBe(2);
+    expect(internal.viewedAt).toBeDefined();
+
+    const publicView = await request(app).get(`/public/estimates/${estimate.shareToken}`);
+    expect(publicView.body.viewCount).toBeUndefined();
+    expect(publicView.body.viewedAt).toBeUndefined();
+  });
+
+  test('the accept/reject action endpoint is rate limited per IP', async () => {
+    // actionLimiter max is 10/window; the beforeEach reset means we start clean.
+    for (let i = 0; i < 10; i++) {
+      // eslint-disable-next-line no-await-in-loop
+      const res = await request(app).post(`/public/estimates/${estimate.shareToken}/reject`).send({ name: 'Jane', reason: `attempt ${i}` });
+      expect(res.status).not.toBe(429);
+    }
+    const res = await request(app).post(`/public/estimates/${estimate.shareToken}/reject`).send({ name: 'Jane', reason: 'one too many' });
+    expect(res.status).toBe(429);
+  });
+});
+
+describe('POST /estimates/:id/regenerate-link', () => {
+  let tenant;
+  let ownerToken;
+  let estimate;
+
+  beforeEach(() => {
+    reset();
+    tenant = TenantRepository.create({ name: 'Acme Inc', slug: 'acme' });
+    const owner = UserRepository.create({ tenantId: tenant.id, provider: 'google', providerId: 'g-1', email: 'owner@example.com', role: 'owner' });
+    ownerToken = signToken({ userId: owner.id, tenantId: tenant.id });
+    const customer = CustomerRepository.create({ tenantId: tenant.id, name: 'Jane Homeowner' });
+    const job = JobRepository.create({ tenantId: tenant.id, customerId: customer.id, title: 'Job' });
+    estimate = EstimateRepository.create({ tenantId: tenant.id, jobId: job.id });
+  });
+
+  test('issues a new token and invalidates the old one', async () => {
+    const oldToken = estimate.shareToken;
+
+    const res = await request(app)
+      .post(`/estimates/${estimate.id}/regenerate-link`)
+      .set('x-tenant-id', 'acme')
+      .set('Authorization', `Bearer ${ownerToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.shareToken).toBeDefined();
+    expect(res.body.shareToken).not.toBe(oldToken);
+
+    const oldTokenLookup = await request(app).get(`/public/estimates/${oldToken}`);
+    expect(oldTokenLookup.status).toBe(404);
+
+    const newTokenLookup = await request(app).get(`/public/estimates/${res.body.shareToken}`);
+    expect(newTokenLookup.status).toBe(200);
+  });
+
+  test('works regardless of the estimate\'s status', async () => {
+    await request(app).post(`/estimates/${estimate.id}/send`).set('x-tenant-id', 'acme').set('Authorization', `Bearer ${ownerToken}`);
+    await request(app).post(`/estimates/${estimate.id}/approve`).set('x-tenant-id', 'acme').set('Authorization', `Bearer ${ownerToken}`).send({});
+
+    const res = await request(app)
+      .post(`/estimates/${estimate.id}/regenerate-link`)
+      .set('x-tenant-id', 'acme')
+      .set('Authorization', `Bearer ${ownerToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('approved'); // regenerating the link never changes approval state
   });
 });

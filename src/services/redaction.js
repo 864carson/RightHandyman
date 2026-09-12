@@ -62,4 +62,39 @@ function redactEstimateFinancials(internalView, { reveal = false } = {}) {
   };
 }
 
-module.exports = { redactCustomerPII, redactEstimateFinancials };
+/**
+ * Strips hourlyCost (payroll cost) from a single TimeEntry -- duration,
+ * notes, status, and billingRate (customer-facing price side, same "keep
+ * price, hide cost" split as redactEstimateFinancials) stay visible.
+ */
+function redactTimeEntryFinancials(entry, { reveal = false } = {}) {
+  if (reveal) return { ...entry, financialsRedacted: false };
+
+  const { hourlyCost, ...safe } = entry;
+  return { ...safe, financialsRedacted: true };
+}
+
+/**
+ * Strips the cost-side figures from a job pricing summary (see
+ * services/timeTrackingCalculations.js buildJobPricingSummary) --
+ * quoted/actual labor COST and the cost variance. Hours, billable price,
+ * and finalPrice (all price-side, what the business would actually
+ * charge/quote) stay visible.
+ */
+function redactTimeSummaryFinancials(summary, { reveal = false } = {}) {
+  if (reveal) return { ...summary, financialsRedacted: false };
+
+  const { totalCost, ...safeActual } = summary.actual;
+  const safeQuoted = summary.quoted ? (({ laborCost, ...rest }) => rest)(summary.quoted) : null;
+  const safeVariance = summary.variance ? (({ laborCost, ...rest }) => rest)(summary.variance) : null;
+
+  return {
+    ...summary,
+    quoted: safeQuoted,
+    actual: safeActual,
+    variance: safeVariance,
+    financialsRedacted: true
+  };
+}
+
+module.exports = { redactCustomerPII, redactEstimateFinancials, redactTimeEntryFinancials, redactTimeSummaryFinancials };

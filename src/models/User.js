@@ -51,6 +51,15 @@ class UserRepository {
       // the only way to flip this is setPlatformAdmin(), which nothing in
       // the normal signup/invite/self-service flow ever calls.
       platformAdmin: false,
+      // What this employee costs the business, and what customers are
+      // billed for their time on a time-and-materials job, per hour. Both
+      // optional (not every user does billable field work) and only ever
+      // settable by an owner/admin via PATCH /users/:id, never by the
+      // user themself -- see routes/user.js. TimeEntry snapshots whichever
+      // of these applied at the moment the entry was created, so a later
+      // rate change never silently rewrites historical cost/billing data.
+      defaultHourlyCost: null,
+      defaultBillingRate: null,
       createdAt: new Date().toISOString()
     };
 
@@ -126,6 +135,12 @@ class UserRepository {
     if (updates.status !== undefined && !VALID_STATUSES.includes(updates.status)) {
       throw new Error(`status must be one of: ${VALID_STATUSES.join(', ')}`);
     }
+    if (updates.defaultHourlyCost !== undefined && updates.defaultHourlyCost !== null && typeof updates.defaultHourlyCost !== 'number') {
+      throw new Error('defaultHourlyCost must be a number or null');
+    }
+    if (updates.defaultBillingRate !== undefined && updates.defaultBillingRate !== null && typeof updates.defaultBillingRate !== 'number') {
+      throw new Error('defaultBillingRate must be a number or null');
+    }
 
     if (updates.email !== undefined) {
       const normalizedEmail = updates.email.trim().toLowerCase();
@@ -143,6 +158,8 @@ class UserRepository {
     if (updates.avatarUrl !== undefined) user.avatarUrl = updates.avatarUrl;
     if (updates.role !== undefined) user.role = updates.role;
     if (updates.status !== undefined) user.status = updates.status;
+    if (updates.defaultHourlyCost !== undefined) user.defaultHourlyCost = updates.defaultHourlyCost;
+    if (updates.defaultBillingRate !== undefined) user.defaultBillingRate = updates.defaultBillingRate;
 
     user.updatedAt = new Date().toISOString();
     return user;
