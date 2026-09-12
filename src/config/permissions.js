@@ -50,7 +50,16 @@ const PERMISSIONS = Object.freeze({
   // Catalog items and estimate templates are managed together -- they're
   // both "the shared price book" from a permissions standpoint.
   CATALOG_READ: 'catalog:read',
-  CATALOG_MANAGE: 'catalog:manage'
+  CATALOG_MANAGE: 'catalog:manage',
+
+  // Logging your OWN time (clock in/out, or view your own history) is a
+  // broad, everyday action. Seeing OTHER employees' hours alongside cost/
+  // billing-rate figures -- i.e. anything payroll-adjacent -- and entering
+  // or editing time on someone else's behalf are kept separate and more
+  // restricted, the same reasoning as CATALOG_READ vs CATALOG_MANAGE.
+  TIME_ENTRIES_LOG: 'time-entries:log',
+  TIME_ENTRIES_READ: 'time-entries:read',
+  TIME_ENTRIES_MANAGE: 'time-entries:manage'
 });
 
 const ALL_PERMISSIONS = Object.freeze(Object.values(PERMISSIONS));
@@ -85,7 +94,10 @@ const DEFAULT_ROLE_PERMISSIONS = Object.freeze({
     PERMISSIONS.ESTIMATES_SEND,
     PERMISSIONS.ESTIMATES_RECORD_RESPONSE,
     PERMISSIONS.CATALOG_READ,
-    PERMISSIONS.CATALOG_MANAGE
+    PERMISSIONS.CATALOG_MANAGE,
+    PERMISSIONS.TIME_ENTRIES_LOG,
+    PERMISSIONS.TIME_ENTRIES_READ,
+    PERMISSIONS.TIME_ENTRIES_MANAGE
   ],
   member: [
     PERMISSIONS.CUSTOMERS_CREATE,
@@ -106,7 +118,12 @@ const DEFAULT_ROLE_PERMISSIONS = Object.freeze({
     PERMISSIONS.ESTIMATES_UPDATE,
     PERMISSIONS.ESTIMATES_SEND,
     PERMISSIONS.ESTIMATES_RECORD_RESPONSE,
-    PERMISSIONS.CATALOG_READ
+    PERMISSIONS.CATALOG_READ,
+    // Every field employee can clock themselves in/out and see their own
+    // history, but NOT other employees' hours or any hourly cost/billing
+    // rate figures -- that's payroll-adjacent data, kept at admin+ via
+    // TIME_ENTRIES_READ/MANAGE, same instinct as catalog:manage.
+    PERMISSIONS.TIME_ENTRIES_LOG
   ]
 });
 

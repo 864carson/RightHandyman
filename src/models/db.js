@@ -27,17 +27,23 @@ function createStore() {
     rolePermissionOverrides: new Map(),
     jobs: new Map(), // id -> job
     estimates: new Map(), // id -> estimate
-    // shareToken -> estimateId. Deliberately NOT tenant-scoped as a key --
-    // the token itself (unguessable, random) is the security boundary, the
-    // same pattern used for refreshTokens above. Looked up without knowing
-    // the tenant in advance, e.g. from a public customer-facing link.
-    estimatesByShareToken: new Map(),
+    // sha256(shareToken) -> estimateId. Keyed by HASH, not the raw token --
+    // only the hash is ever persisted (see models/Estimate.js /
+    // utils/tokenHash.js), the same reasoning as hashing refreshTokens
+    // above. Deliberately NOT tenant-scoped as a key -- the token's
+    // randomness is the security boundary, looked up without knowing the
+    // tenant in advance, e.g. from a public customer-facing link.
+    estimatesByShareTokenHash: new Map(),
     catalogItems: new Map(), // id -> catalog item
     estimateTemplates: new Map(), // id -> estimate template
     // Append-only. reset() below still clears it (tests need a clean
     // slate) -- what's deliberate is that DELETE /tenants/:id does NOT
     // cascade-delete these, see models/AuditLog.js.
-    auditLogEntries: new Map()
+    auditLogEntries: new Map(),
+    // Append-only legal acceptance/rejection ledger for estimates -- also
+    // deliberately NOT cascade-deleted, see models/EstimateAcceptance.js.
+    estimateAcceptances: new Map(),
+    timeEntries: new Map() // id -> time entry
   };
 }
 

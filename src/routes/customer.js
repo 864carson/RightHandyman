@@ -7,6 +7,7 @@ const CustomerRepository = require('../models/Customer');
 const OpportunityRepository = require('../models/Opportunity');
 const JobRepository = require('../models/Job');
 const EstimateRepository = require('../models/Estimate');
+const TimeEntryRepository = require('../models/TimeEntry');
 const AuditLogRepository = require('../models/AuditLog');
 const { redactCustomerPII } = require('../services/redaction');
 
@@ -92,10 +93,12 @@ router.delete('/:id', requirePermission(PERMISSIONS.CUSTOMERS_DELETE), (req, res
   const removed = CustomerRepository.delete(req.tenant.id, req.params.id);
   if (!removed) return res.status(404).json({ error: 'Customer not found' });
   // Cascade: a customer's opportunities and jobs (and every estimate
-  // version under those jobs) don't make sense without the customer.
+  // version + time entry under those jobs) don't make sense without the
+  // customer.
   OpportunityRepository.deleteAllForCustomer(req.tenant.id, req.params.id);
   for (const job of JobRepository.listByCustomer(req.tenant.id, req.params.id)) {
     EstimateRepository.deleteAllForJob(req.tenant.id, job.id);
+    TimeEntryRepository.deleteAllForJob(req.tenant.id, job.id);
   }
   JobRepository.deleteAllForCustomer(req.tenant.id, req.params.id);
   res.status(204).send();

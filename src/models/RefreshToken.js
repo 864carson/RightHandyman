@@ -1,11 +1,6 @@
 const crypto = require('crypto');
 const { getStore } = require('./db');
-
-function hashToken(token) {
-  // Only the hash is stored, mirroring how you'd store refresh tokens
-  // against a real DB -- a leaked DB row shouldn't hand out usable tokens.
-  return crypto.createHash('sha256').update(token).digest('hex');
-}
+const { hashToken } = require('../utils/tokenHash');
 
 function parseDurationToMs(duration) {
   if (typeof duration === 'number') return duration * 1000;

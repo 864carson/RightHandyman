@@ -67,17 +67,23 @@ router.patch('/:id', (req, res) => {
     return res.status(403).json({ error: 'You can only update your own profile' });
   }
 
-  const { displayName, avatarUrl, role, status } = req.body || {};
+  const { displayName, avatarUrl, role, status, defaultHourlyCost, defaultBillingRate } = req.body || {};
   const updates = {};
   if (displayName !== undefined) updates.displayName = displayName;
   if (avatarUrl !== undefined) updates.avatarUrl = avatarUrl;
 
-  if (role !== undefined || status !== undefined) {
+  if (role !== undefined || status !== undefined || defaultHourlyCost !== undefined || defaultBillingRate !== undefined) {
     if (!isElevated) {
-      return res.status(403).json({ error: 'Only owners/admins can change role or status' });
+      return res.status(403).json({ error: 'Only owners/admins can change role, status, or pay/billing rates' });
     }
     if (role !== undefined) updates.role = role;
     if (status !== undefined) updates.status = status;
+    // Gated the same as role/status: owner/admin only, self or someone
+    // else. Not restricted to "never yourself" -- in a small owner-operator
+    // shop the owner is often the one doing billable work too, and there's
+    // no separate "manager" to set their rate for them.
+    if (defaultHourlyCost !== undefined) updates.defaultHourlyCost = defaultHourlyCost;
+    if (defaultBillingRate !== undefined) updates.defaultBillingRate = defaultBillingRate;
   }
 
   try {

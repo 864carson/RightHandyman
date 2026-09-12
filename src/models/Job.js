@@ -18,6 +18,18 @@ const VALID_JOB_STATUSES = [
   'cancelled'
 ];
 
+/**
+ * 'fixed' (default): the approved estimate's price is what the customer
+ * pays, full stop -- tracked time is purely informational, for comparing
+ * quoted vs. actual labor and seeing true margin.
+ * 'time_and_materials': the labor portion of the final bill is trued up
+ * from actual tracked hours x each employee's billing rate, instead of the
+ * estimate's quoted labor price; materials/equipment/subcontract/travel
+ * stay as quoted either way. See services/timeTrackingCalculations.js and
+ * POST /jobs/:id/finalize-pricing.
+ */
+const VALID_PRICING_MODELS = ['fixed', 'time_and_materials'];
+
 class JobRepository {
   create({
     tenantId,
@@ -30,6 +42,7 @@ class JobRepository {
     weatherNotes,
     notes,
     photos,
+    pricingModel,
     createdBy
   }) {
     if (!tenantId || !customerId || !title) {
@@ -37,6 +50,9 @@ class JobRepository {
     }
     if (photos !== undefined && !Array.isArray(photos)) {
       throw new Error('photos must be an array');
+    }
+    if (pricingModel !== undefined && !VALID_PRICING_MODELS.includes(pricingModel)) {
+      throw new Error(`pricingModel must be one of: ${VALID_PRICING_MODELS.join(', ')}`);
     }
 
     const store = getStore();
@@ -59,6 +75,12 @@ class JobRepository {
       // uploaded the image to. See README for notes on adding real storage.
       photos: Array.isArray(photos) ? photos : [],
       status: 'estimating',
+      pricingModel: pricingModel || 'fixed',
+      // Set by POST /jobs/:id/finalize-pricing -- once present, no new
+      // time entries can be logged against this job and existing ones are
+      // locked. Null until then.
+      finalizedAt: null,
+      finalPriceSnapshot: null,
       // Points at whichever Estimate version is currently "the one" for
       // this job -- the latest draft, or the latest approved version if a
       // change order is in flight. Avoids having to infer "current" from
@@ -100,6 +122,16 @@ class JobRepository {
     if (updates.photos !== undefined && !Array.isArray(updates.photos)) {
       throw new Error('photos must be an array');
     }
+    if (updates.pricingModel !== undefined) {
+      if (!VALID_PRICING_MODELS.includes(updates.pricingModel)) {
+        throw new Error(`pricingModel must be one of: ${VALID_PRICING_MODELS.join(', ')}`);
+      }
+      if (job.finalizedAt) {
+        throw Object.assign(new Error('Cannot change pricingModel -- this job\'s pricing has already been finalized'), {
+          status: 409
+        });
+      }
+    }
 
     const allowed = [
       'title',
@@ -109,13 +141,32 @@ class JobRepository {
       'weatherNotes',
       'notes',
       'photos',
-      'status'
+      'status',
+      'pricingModel'
     ];
     for (const key of allowed) {
       if (updates[key] !== undefined) job[key] = updates[key];
     }
 
     job.updatedAt = new Date().toISOString();
+    return job;
+  }
+
+  /**
+   * Locks in the final pricing snapshot computed by
+   * estimateController/timeTrackingCalculations (see routes/job.js
+   * POST /:id/finalize-pricing) and marks the job finalized -- from this
+   * point on, its pricingModel can't change and no new time entries can be
+   * logged against it (see TimeEntry.js).
+   */
+  finalizePricing(tenantId, id, snapshot) {
+    const store = getStore();
+    const job = store.jobs.get(id);
+    if (!job || job.tenantId !== tenantId) return null;
+
+    job.finalizedAt = new Date().toISOString();
+    job.finalPriceSnapshot = snapshot;
+    job.updatedAt = job.finalizedAt;
     return job;
   }
 
@@ -161,3 +212,4 @@ class JobRepository {
 module.exports = new JobRepository();
 module.exports.JobRepository = JobRepository;
 module.exports.VALID_JOB_STATUSES = VALID_JOB_STATUSES;
+module.exports.VALID_PRICING_MODELS = VALID_PRICING_MODELS;

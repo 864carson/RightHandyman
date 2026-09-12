@@ -5,6 +5,7 @@ const CustomerRepository = require('../models/Customer');
 const OpportunityRepository = require('../models/Opportunity');
 const JobRepository = require('../models/Job');
 const EstimateRepository = require('../models/Estimate');
+const TimeEntryRepository = require('../models/TimeEntry');
 const CatalogItemRepository = require('../models/CatalogItem');
 const EstimateTemplateRepository = require('../models/EstimateTemplate');
 const AuditLogRepository = require('../models/AuditLog');
@@ -18,14 +19,6 @@ const { VALID_ROLES } = require('../models/User');
 const { inviteMember, removeMember } = require('../controllers/membershipController');
 
 const router = express.Router();
-
-/**
- * GET /tenants
- * Lists every tenant.
- */
-router.get('/', requireAuth, (req, res) => {
-  res.json(TenantRepository.list());
-});
 
 /**
  * POST /tenants  { name, slug }
@@ -80,6 +73,7 @@ router.patch('/:idOrSlug', loadTenantParam(), requireAuth, requirePermission(PER
  */
 router.delete('/:idOrSlug', loadTenantParam(), requireAuth, requireRole(['owner']), (req, res) => {
   EstimateRepository.deleteAllForTenant(req.tenant.id);
+  TimeEntryRepository.deleteAllForTenant(req.tenant.id);
   JobRepository.deleteAllForTenant(req.tenant.id);
   EstimateTemplateRepository.deleteAllForTenant(req.tenant.id);
   CatalogItemRepository.deleteAllForTenant(req.tenant.id);
