@@ -59,7 +59,13 @@ const PERMISSIONS = Object.freeze({
   // restricted, the same reasoning as CATALOG_READ vs CATALOG_MANAGE.
   TIME_ENTRIES_LOG: 'time-entries:log',
   TIME_ENTRIES_READ: 'time-entries:read',
-  TIME_ENTRIES_MANAGE: 'time-entries:manage'
+  TIME_ENTRIES_MANAGE: 'time-entries:manage',
+
+  // Texting a customer about their job is everyday operational work, not
+  // a sensitive/payroll-style concern -- both are granted to member by
+  // default, unlike the TIME_ENTRIES split above.
+  MESSAGES_SEND: 'messages:send',
+  MESSAGES_READ: 'messages:read'
 });
 
 const ALL_PERMISSIONS = Object.freeze(Object.values(PERMISSIONS));
@@ -97,7 +103,9 @@ const DEFAULT_ROLE_PERMISSIONS = Object.freeze({
     PERMISSIONS.CATALOG_MANAGE,
     PERMISSIONS.TIME_ENTRIES_LOG,
     PERMISSIONS.TIME_ENTRIES_READ,
-    PERMISSIONS.TIME_ENTRIES_MANAGE
+    PERMISSIONS.TIME_ENTRIES_MANAGE,
+    PERMISSIONS.MESSAGES_SEND,
+    PERMISSIONS.MESSAGES_READ
   ],
   member: [
     PERMISSIONS.CUSTOMERS_CREATE,
@@ -123,7 +131,9 @@ const DEFAULT_ROLE_PERMISSIONS = Object.freeze({
     // history, but NOT other employees' hours or any hourly cost/billing
     // rate figures -- that's payroll-adjacent data, kept at admin+ via
     // TIME_ENTRIES_READ/MANAGE, same instinct as catalog:manage.
-    PERMISSIONS.TIME_ENTRIES_LOG
+    PERMISSIONS.TIME_ENTRIES_LOG,
+    PERMISSIONS.MESSAGES_SEND,
+    PERMISSIONS.MESSAGES_READ
   ]
 });
 

@@ -13,7 +13,7 @@ const { getStore } = require('./db');
  * routes/tenant.js) -- an audit trail should outlive the thing it's
  * auditing, not disappear along with it.
  */
-const ACTIONS = ['impersonation_start', 'reveal_pii', 'reveal_financials'];
+const ACTIONS = ['impersonation_start', 'reveal_pii', 'reveal_financials', 'message_reconciled'];
 
 class AuditLogRepository {
   record({ actorUserId, actorHomeTenantId, targetTenantId, action, resourceType, resourceId, reason }) {

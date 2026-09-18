@@ -1,6 +1,15 @@
 const { randomUUID } = require('crypto');
 const { getStore } = require('./db');
 
+/** Strips everything but digits, keeping only the last 10 -- enough to
+ * match "+15551234567", "(555) 123-4567", and "555-123-4567" as the same
+ * number without needing a full phone-number-parsing library. */
+function normalizePhone(phone) {
+  if (!phone) return null;
+  const digits = String(phone).replace(/\D/g, '');
+  return digits.slice(-10) || null;
+}
+
 class CustomerRepository {
   create({ tenantId, name, email, phone, company, notes, createdBy }) {
     if (!tenantId || !name) {
@@ -71,7 +80,25 @@ class CustomerRepository {
     }
     return count;
   }
+
+  /**
+   * Cross-tenant search by phone number, used to match an inbound SMS to
+   * a customer (see controllers/messagingController.js) -- this app has
+   * one global SMS_FROM_NUMBER shared by every tenant, not a number per
+   * tenant, so an inbound text doesn't come with a tenant attached the way
+   * every other request in this app does. Returns every match across
+   * every tenant (ideally exactly one); the caller decides what to do if
+   * that's zero or more than one. Compares normalized digits so "+1555…",
+   * "(555) …", and "555-…" all match the same stored number.
+   */
+  findAllByPhone(phone) {
+    const normalized = normalizePhone(phone);
+    if (!normalized) return [];
+    const store = getStore();
+    return Array.from(store.customers.values()).filter((c) => normalizePhone(c.phone) === normalized);
+  }
 }
 
 module.exports = new CustomerRepository();
 module.exports.CustomerRepository = CustomerRepository;
+module.exports.normalizePhone = normalizePhone;
