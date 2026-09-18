@@ -8,8 +8,14 @@ const CustomerRepository = require('../models/Customer');
 const OpportunityRepository = require('../models/Opportunity');
 const EstimateRepository = require('../models/Estimate');
 const TimeEntryRepository = require('../models/TimeEntry');
+const MessageRepository = require('../models/Message');
 const AuditLogRepository = require('../models/AuditLog');
-const { redactEstimateFinancials, redactTimeEntryFinancials, redactTimeSummaryFinancials } = require('../services/redaction');
+const {
+  redactEstimateFinancials,
+  redactTimeEntryFinancials,
+  redactTimeSummaryFinancials,
+  redactMessageContent
+} = require('../services/redaction');
 const { buildInternalView } = require('../controllers/estimateController');
 const timeTrackingController = require('../controllers/timeTrackingController');
 
@@ -179,6 +185,34 @@ router.post('/:id/finalize-pricing', requirePermission(PERMISSIONS.TIME_ENTRIES_
   }
 });
 
+/**
+ * GET /jobs/:id/messages
+ * Every SMS ever sent/received about this specific job, newest first.
+ * (A message can also be logged against a customer with no job at all --
+ * see GET /customers/:id/messages for the customer-wide view.)
+ */
+router.get('/:id/messages', requirePermission(PERMISSIONS.MESSAGES_READ), (req, res) => {
+  const job = JobRepository.findById(req.tenant.id, req.params.id);
+  if (!job) return res.status(404).json({ error: 'Job not found' });
+
+  const messages = MessageRepository.listByJob(req.tenant.id, job.id).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+  if (!req.currentUser || !req.currentUser.impersonation) return res.json(messages);
+
+  const reveal = req.query.reveal === 'true';
+  if (reveal && messages.length > 0) {
+    AuditLogRepository.record({
+      actorUserId: req.user.userId,
+      actorHomeTenantId: req.user.impersonation.homeTenantId,
+      targetTenantId: req.tenant.id,
+      action: 'reveal_financials',
+      resourceType: 'job-messages',
+      resourceId: job.id
+    });
+  }
+  res.json(messages.map((m) => redactMessageContent(m, { reveal })));
+});
+
 router.post('/', requirePermission(PERMISSIONS.JOBS_CREATE), (req, res, next) => {
   const { customerId, opportunityId } = req.body || {};
 
@@ -210,12 +244,13 @@ router.patch('/:id', requirePermission(PERMISSIONS.JOBS_UPDATE), (req, res, next
   }
 });
 
-/** Deletes a job and every estimate version + time entry ever created for it. */
+/** Deletes a job and every estimate version + time entry + message ever created for it. */
 router.delete('/:id', requirePermission(PERMISSIONS.JOBS_DELETE), (req, res) => {
   const removed = JobRepository.delete(req.tenant.id, req.params.id);
   if (!removed) return res.status(404).json({ error: 'Job not found' });
   EstimateRepository.deleteAllForJob(req.tenant.id, req.params.id);
   TimeEntryRepository.deleteAllForJob(req.tenant.id, req.params.id);
+  MessageRepository.deleteAllForJob(req.tenant.id, req.params.id);
   res.status(204).send();
 });
 

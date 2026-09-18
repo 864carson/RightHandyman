@@ -6,6 +6,7 @@ const OpportunityRepository = require('../models/Opportunity');
 const JobRepository = require('../models/Job');
 const EstimateRepository = require('../models/Estimate');
 const TimeEntryRepository = require('../models/TimeEntry');
+const MessageRepository = require('../models/Message');
 const CatalogItemRepository = require('../models/CatalogItem');
 const EstimateTemplateRepository = require('../models/EstimateTemplate');
 const AuditLogRepository = require('../models/AuditLog');
@@ -74,6 +75,7 @@ router.patch('/:idOrSlug', loadTenantParam(), requireAuth, requirePermission(PER
 router.delete('/:idOrSlug', loadTenantParam(), requireAuth, requireRole(['owner']), (req, res) => {
   EstimateRepository.deleteAllForTenant(req.tenant.id);
   TimeEntryRepository.deleteAllForTenant(req.tenant.id);
+  MessageRepository.deleteAllForTenant(req.tenant.id);
   JobRepository.deleteAllForTenant(req.tenant.id);
   EstimateTemplateRepository.deleteAllForTenant(req.tenant.id);
   CatalogItemRepository.deleteAllForTenant(req.tenant.id);

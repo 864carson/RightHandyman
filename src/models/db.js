@@ -43,7 +43,8 @@ function createStore() {
     // Append-only legal acceptance/rejection ledger for estimates -- also
     // deliberately NOT cascade-deleted, see models/EstimateAcceptance.js.
     estimateAcceptances: new Map(),
-    timeEntries: new Map() // id -> time entry
+    timeEntries: new Map(), // id -> time entry
+    messages: new Map() // id -> SMS message (see models/Message.js)
   };
 }
 

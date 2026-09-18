@@ -5,6 +5,8 @@ const requirePlatformAdmin = require('../middleware/requirePlatformAdmin');
 const UserRepository = require('../models/User');
 const TenantRepository = require('../models/Tenant');
 const AuditLogRepository = require('../models/AuditLog');
+const MessageRepository = require('../models/Message');
+const { reconcileMessage } = require('../controllers/messagingController');
 const { signToken } = require('../utils/jwt');
 
 const router = express.Router();
@@ -56,6 +58,47 @@ router.use(requirePlatformAdmin);
 /** GET /platform-admin/tenants -- every tenant that exists, so an admin knows what they can target. */
 router.get('/tenants', (req, res) => {
   res.json(TenantRepository.list());
+});
+
+/**
+ * GET /platform-admin/messages/unmatched
+ * Inbound SMS that couldn't be tied to exactly one tenant+customer by
+ * phone number (see models/Message.js, controllers/messagingController.js)
+ * -- this only exists because this app uses one global SMS_FROM_NUMBER for
+ * every tenant rather than a number per tenant (see README). Genuinely
+ * cross-tenant data (these messages have no tenant yet), so this lives
+ * under platform-admin rather than any single tenant's routes.
+ */
+router.get('/messages/unmatched', (req, res) => {
+  res.json(MessageRepository.listUnmatched());
+});
+
+/**
+ * POST /platform-admin/messages/:id/reconcile  { tenantId, customerId, jobId? }
+ * Manually attaches a previously-unmatched/ambiguous message to the right
+ * tenant+customer once a human has figured out who it's actually from.
+ */
+router.post('/messages/:id/reconcile', (req, res, next) => {
+  const { tenantId, customerId, jobId } = req.body || {};
+  if (!tenantId || !customerId) {
+    return res.status(400).json({ error: 'tenantId and customerId are required' });
+  }
+
+  try {
+    const message = reconcileMessage(req.params.id, { tenantId, customerId, jobId });
+    AuditLogRepository.record({
+      actorUserId: req.user.userId,
+      actorHomeTenantId: req.user.tenantId,
+      targetTenantId: tenantId,
+      action: 'message_reconciled',
+      resourceType: 'message',
+      resourceId: message.id
+    });
+    res.json(message);
+  } catch (err) {
+    err.status = err.status || 400;
+    next(err);
+  }
 });
 
 /**

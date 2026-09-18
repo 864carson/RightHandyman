@@ -97,4 +97,30 @@ function redactTimeSummaryFinancials(summary, { reveal = false } = {}) {
   };
 }
 
-module.exports = { redactCustomerPII, redactEstimateFinancials, redactTimeEntryFinancials, redactTimeSummaryFinancials };
+/**
+ * Strips message content (`body`) during impersonation -- a customer's
+ * own words are exactly the kind of PII-adjacent content that shouldn't
+ * be casually browsable by cross-tenant support access. `toNumber`/
+ * `fromNumber` are treated the same way customer PII is elsewhere, hidden
+ * by default. Status, direction, and timestamps stay visible -- they're
+ * metadata about the message, not its content.
+ */
+function redactMessageContent(message, { reveal = false } = {}) {
+  if (reveal) return { ...message, contentRedacted: false };
+
+  return {
+    ...message,
+    body: '[hidden -- pass ?reveal=true]',
+    fromNumber: message.fromNumber ? '[hidden -- pass ?reveal=true]' : message.fromNumber,
+    toNumber: message.toNumber ? '[hidden -- pass ?reveal=true]' : message.toNumber,
+    contentRedacted: true
+  };
+}
+
+module.exports = {
+  redactCustomerPII,
+  redactEstimateFinancials,
+  redactTimeEntryFinancials,
+  redactTimeSummaryFinancials,
+  redactMessageContent
+};

@@ -37,12 +37,15 @@ tenant rather than a hardcoded rule.
 - `src/config/permissions.js` defines every permission and the **built-in
   default** bundle for each role (`DEFAULT_ROLE_PERMISSIONS`). By default:
   `owner` gets everything; `admin` gets full CRUD on customers/opportunities/
-  jobs/estimates plus catalog management, time-entry management, member
-  management, and tenant updates; `member` gets create/read/update on
-  customers, opportunities, jobs, and estimates (including send + recording
-  a customer's approve/reject decision) plus read-only catalog access and
-  the ability to log their own time (clock in/out, see their own history),
-  but not delete rights on jobs/estimates, catalog management, or
+  jobs/estimates plus catalog management, time-entry management, message
+  sending/reading, member management, and tenant updates; `member` gets
+  create/read/update on customers, opportunities, jobs, and estimates
+  (including send + recording a customer's approve/reject decision) plus
+  read-only catalog access, the ability to log their own time (clock
+  in/out, see their own history), and full send/read access to SMS
+  messaging (texting a customer is everyday operational work, not a
+  sensitive concern the way payroll data is), but not delete rights on
+  jobs/estimates, catalog management, or
   visibility into *other* employees' hours/pay/billing rates — protecting
   the shared price book and payroll-adjacent data is treated as an
   owner/admin concern, day-to-day field work is not.
@@ -378,8 +381,92 @@ audit-logs it. A job's `finalPriceSnapshot` carries the same figures as a
 standalone time summary, so it's redacted the same way everywhere a job
 object is returned, not just on the dedicated summary endpoint.
 
-## API reference
+## SMS / text messaging (no vendor lock-in)
 
+Built specifically so this app never talks to a texting provider's SDK
+directly anywhere except one small, isolated folder
+(`src/services/sms/`). Every route/controller in the rest of the app only
+ever calls `getSmsProvider()` and talks to the four-method interface it
+returns. Switching from Telnyx to Twilio -- or to a provider that doesn't
+exist yet -- means changing `SMS_PROVIDER` and its credential env vars,
+never touching a line of application code. `SMS_PROVIDER` defaults to
+`console`, which logs instead of sending -- the app runs and is fully
+testable with zero provider account, credentials, or network access.
+
+**The interface** (`services/sms/SmsProvider.js`) every adapter
+implements:
+- `send({ to, from, text })` -- returns `{ providerMessageId, status }` or throws
+- `parseInboundWebhook(rawBody, headers)` -- normalizes a provider's inbound-message webhook into `{ fromNumber, toNumber, text, providerMessageId, receivedAt }`
+- `parseStatusWebhook(rawBody, headers)` -- normalizes a delivery-status webhook into `{ providerMessageId, status, errorMessage? }`
+- `verifyWebhookSignature(rawBody, headers, fullUrl?)` -- `{ verified, reason? }`, never throws
+
+**Adapters implemented** (`services/sms/providers/`): `console` (dev/test
+default, no network), `telnyx`, `plivo`, `twilio`, `bird`
+(formerly MessageBird), and `aws_sns`. Each provider's SDK is
+**intentionally not a hard dependency** of this app -- `npm install`
+doesn't pull in five texting SDKs you'll only ever use one of. Each
+adapter lazily `require()`s its SDK only when actually used, and throws a
+clear `npm install <package>` error if it's missing, rather than crashing
+the whole app at startup. Adding a brand new provider is one new file
+implementing the same four methods, registered in
+`services/sms/index.js`'s `BUILDERS` map.
+
+**Sending.** `POST /messages { customerId, jobId?, body }`
+(`messages:send`, granted to every member by default -- texting a
+customer is everyday operational work, not a sensitive concern) resolves
+the customer's phone, sends through whichever provider is active, and
+records a `Message`. The request "succeeding" (`201`, a `Message` row
+created) is separate from the SMS itself succeeding -- if the provider's
+`send()` call fails, the response still comes back `201` with
+`status: 'failed'` and an `errorMessage`, the same way a real provider's
+own API behaves (a webhook or later poll is what tells you delivery
+actually failed, not the initial API call).
+
+**Receiving.** `POST /webhooks/sms/:provider/inbound` and
+`.../status` are public, unauthenticated (a provider calls these, not a
+logged-in user) and rate-limited (120/min per IP). The provider is named
+in the URL rather than inferred from `SMS_PROVIDER`, so switching your
+active outbound provider doesn't break webhooks still arriving from
+whichever provider you were using a moment ago mid-migration.
+
+**The "one global number" tradeoff.** This app uses a single
+`SMS_FROM_NUMBER` shared by every tenant, not a number (and thus provider
+account) per tenant -- simpler and cheaper for a first cut, but it means
+an inbound reply doesn't arrive with a tenant attached the way every other
+request in this app does. Inbound messages are matched to a tenant +
+customer by **phone number** (`CustomerRepository.findAllByPhone`,
+comparing normalized digits so formatting differences don't matter):
+exactly one match → `matchStatus: 'matched'`; zero or more than one
+(e.g. two unrelated tenants happen to each have a customer with that
+number) → `'unmatched'`/`'ambiguous'`, stored with no tenant at all.
+`GET /platform-admin/messages/unmatched` and
+`POST /platform-admin/messages/:id/reconcile` (platform-admin only, since
+these messages are genuinely cross-tenant data with no tenant of their own
+yet) let a human attach them by hand. Moving to a number-per-tenant setup
+later would eliminate this category of message entirely -- the webhook's
+`to` number would resolve the tenant directly instead of guessing from
+`from`.
+
+**Webhook signature verification** is real but of varying depth per
+provider, and every adapter's file comment says exactly which: Twilio
+delegates to the SDK's own `validateRequest` helper (trust the vendor's
+verified logic over hand-rolled crypto); Telnyx's Ed25519 check is
+implemented with Node's built-in `crypto` and round-trip tested against a
+real generated keypair; Plivo and Bird are best-effort HMAC implementations
+worth double-checking against current docs before production; AWS SNS
+plain SMS has no webhooks to verify at all (see its adapter's comment on
+why). `SMS_WEBHOOK_STRICT_VERIFICATION=true` rejects (`401`) any webhook
+that doesn't verify; the default is permissive (processed with a logged
+warning) so a fresh setup isn't broken by a provider whose scheme isn't
+fully nailed down yet.
+
+**Redaction during platform-admin impersonation.** Message `body` and
+phone numbers are hidden by default during an impersonation session, the
+same "hide sensitive content, keep metadata" pattern used everywhere else
+-- status/direction/timestamps stay visible, `?reveal=true` shows the real
+content and audit-logs it.
+
+## API reference
 
 | Method | Path | Auth | Notes |
 |---|---|---|---|
@@ -419,12 +506,14 @@ object is returned, not just on the dedicated summary endpoint.
 | DELETE | `/opportunities/:id` | Bearer + `x-tenant-id`, `opportunities:delete` | delete an opportunity |
 | POST | `/opportunities/:id/convert-to-job` | Bearer + `x-tenant-id`, `jobs:create` | marks the opportunity `won` and creates a linked `Job`, `{title?, siteAddress?, description?, weatherSensitive?, weatherNotes?, notes?, photos?}` |
 | GET | `/customers/:id/jobs` | Bearer + `x-tenant-id`, `customers:read` | that customer's jobs |
+| GET | `/customers/:id/messages` | Bearer + `x-tenant-id`, `messages:read` | every SMS to/from that customer, newest first |
 | GET | `/jobs?customerId=` | Bearer + `x-tenant-id`, `jobs:read` | list, optionally filtered to one customer |
 | GET | `/jobs/:id` | Bearer + `x-tenant-id`, `jobs:read` | fetch a job |
 | GET | `/jobs/:id/estimates` | Bearer + `x-tenant-id`, `jobs:read` | every estimate version ever created for this job, full internal detail, newest first |
 | POST | `/jobs` | Bearer + `x-tenant-id`, `jobs:create` | create `{customerId, opportunityId?, title, description?, siteAddress?, weatherSensitive?, weatherNotes?, notes?, photos?, pricingModel?}` |
 | PATCH | `/jobs/:id` | Bearer + `x-tenant-id`, `jobs:update` | update job fields (title, description, siteAddress, weather flags, notes, photos, status, pricingModel) -- `pricingModel` change is `409` once finalized |
-| DELETE | `/jobs/:id` | Bearer + `x-tenant-id`, `jobs:delete` | delete + cascade-delete every estimate version and time entry under it |
+| DELETE | `/jobs/:id` | Bearer + `x-tenant-id`, `jobs:delete` | delete + cascade-delete every estimate version, time entry, and message under it |
+| GET | `/jobs/:id/messages` | Bearer + `x-tenant-id`, `messages:read` | every SMS tied to this specific job, newest first |
 | GET | `/jobs/:id/time-entries` | Bearer + `x-tenant-id`, `time-entries:read` | every time entry for this job, newest first, full cost/rate detail |
 | GET | `/jobs/:id/time-summary` | Bearer + `x-tenant-id`, `time-entries:read` | quoted-vs-actual labor comparison, or the trued-up T&M final price |
 | POST | `/jobs/:id/time-entries` | Bearer + `x-tenant-id`, `time-entries:manage` | manager-entered time on behalf of an employee `{userId, clockIn, clockOut, notes?, billable?, hourlyCost?, billingRate?}` |
@@ -436,6 +525,13 @@ object is returned, not just on the dedicated summary endpoint.
 | POST | `/time-entries/:id/force-clock-out` | Bearer + `x-tenant-id`, `time-entries:manage` | manager closes a specific (someone else's) active entry `{notes?}` |
 | PATCH | `/time-entries/:id` | Bearer + `x-tenant-id`, `time-entries:manage` | edit notes/billable/rates/clockIn/clockOut -- `409` once locked |
 | DELETE | `/time-entries/:id` | Bearer + `x-tenant-id`, `time-entries:manage` | delete -- `409` once locked |
+| GET | `/messages?customerId=&jobId=` | Bearer + `x-tenant-id`, `messages:read` | list, optionally filtered |
+| GET | `/messages/:id` | Bearer + `x-tenant-id`, `messages:read` | fetch one |
+| POST | `/messages` | Bearer + `x-tenant-id`, `messages:send` | send an SMS `{customerId, jobId?, body}` through whichever provider is active -- `201` even if the send itself later fails (see `status`/`errorMessage`) |
+| POST | `/webhooks/sms/:provider/inbound` | **none** (rate-limited: 120/min per IP) | provider-called; records + phone-matches an inbound SMS |
+| POST | `/webhooks/sms/:provider/status` | **none** (rate-limited: 120/min per IP) | provider-called; updates a message's delivery status |
+| GET | `/platform-admin/messages/unmatched` | Bearer (home tenant), platform admin | inbound SMS that couldn't be matched to exactly one tenant+customer |
+| POST | `/platform-admin/messages/:id/reconcile` | Bearer (home tenant), platform admin | manually attach one `{tenantId, customerId, jobId?}` |
 | GET | `/estimates?jobId=` | Bearer + `x-tenant-id`, `estimates:read` | list (internal view), optionally filtered to one job |
 | GET | `/estimates/:id` | Bearer + `x-tenant-id`, `estimates:read` | fetch one, internal view by default, `?view=customer` to preview the sanitized customer view |
 | GET | `/estimates/:id/versions` | Bearer + `x-tenant-id`, `estimates:read` | full revision chain, oldest first |
@@ -479,11 +575,12 @@ object is returned, not just on the dedicated summary endpoint.
 **`?reveal=true`** — during an impersonation session only, add this to any
 `GET /customers`, `GET /customers/:id`, `GET /estimates*`, `GET
 /jobs/:id/estimates`, `GET /jobs/:id`, `GET /jobs`, `GET
-/jobs/:id/time-entries`, `GET /jobs/:id/time-summary`, or `GET
-/time-entries/:id` request to get back real (unredacted) data instead of
-the default `piiRedacted`/`financialsRedacted` view. Every reveal is
-audit-logged. Has no effect for a tenant's own real members — nothing is
-ever redacted for them in the first place.
+/jobs/:id/time-entries`, `GET /jobs/:id/time-summary`, `GET
+/time-entries/:id`, `GET /messages*`, `GET /customers/:id/messages`, or
+`GET /jobs/:id/messages` request to get back real (unredacted) data
+instead of the default `piiRedacted`/`financialsRedacted`/`contentRedacted`
+view. Every reveal is audit-logged. Has no effect for a tenant's own real
+members — nothing is ever redacted for them in the first place.
 
 ## Project layout
 
@@ -498,9 +595,13 @@ src/
   controllers/membershipController.js Invite / remove tenant members
   controllers/estimateController.js   Job/estimate orchestration + internal vs. customer view builders
   controllers/timeTrackingController.js Job/User/Estimate/TimeEntry orchestration (rates, finalize-pricing)
+  controllers/messagingController.js  Send/inbound-webhook/status-webhook/reconcile orchestration for SMS
   services/estimateCalculations.js    Pure cost/markup/price/tax/deposit math (no side effects)
   services/timeTrackingCalculations.js Pure actual-hours summaries + quoted-vs-actual/T&M pricing math
-  services/redaction.js               PII/financial redaction applied only during impersonation
+  services/redaction.js               PII/financial/message-content redaction applied only during impersonation
+  services/sms/SmsProvider.js         The one interface every SMS adapter implements
+  services/sms/index.js               Factory: reads SMS_PROVIDER, builds/caches the active adapter
+  services/sms/providers/             console (dev/test) + telnyx/plivo/twilio/bird/aws_sns adapters
   seed/estimateCatalogSeed.js         Starter catalog items + templates (landscaping + drainage)
   middleware/tenantResolver.js        Resolves req.tenant from header/subdomain
   middleware/loadTenantParam.js       Resolves req.tenant from a URL param
@@ -520,7 +621,8 @@ src/
   models/TimeEntry.js        Clock-in/out + manual time entries, tenant-wide one-active-entry rule
   models/CatalogItem.js      Shared per-tenant price-book repository
   models/EstimateTemplate.js Packaged line-item bundles ("Weekly mow + edge", etc.)
-  models/AuditLog.js         Append-only log of impersonation + sensitive-data reveals
+  models/AuditLog.js         Append-only log of impersonation + sensitive-data reveals + message reconciliations
+  models/Message.js          SMS repository: outbound sends, inbound webhook records, phone-based matching
   models/RolePermissions.js Per-tenant permission overrides on top of the defaults
   models/RefreshToken.js    Refresh token repository (hashed at rest, rotated on use)
   models/TokenBlocklist.js  Revoked access-token jtis (for logout)
@@ -536,6 +638,8 @@ src/
   routes/publicEstimate.js   Unauthenticated view/accept/reject by share token -- view tracking, rate limiting, digital acceptance
   routes/platformAdmin.js    Bootstrap grant, tenant listing, impersonation token issuance
   routes/timeEntry.js        Self clock-in/out, "my time", force-clock-out, edit/delete (permission-gated)
+  routes/message.js          Send/list/fetch SMS messages (permission-gated, content redacted during impersonation)
+  routes/smsWebhook.js       Unauthenticated inbound/status webhooks by provider, rate-limited
   utils/jwt.js              sign/verify (adds a jti to every token)
   utils/oauthState.js       Encodes tenant context into OAuth `state`
   utils/tokenHash.js        Shared sha256 hash used by RefreshToken and Estimate share tokens
@@ -732,7 +836,35 @@ curl localhost:3000/jobs/<jobId>/time-summary -H "x-tenant-id: acme" -H "Authori
 curl -X POST localhost:3000/jobs/<jobId>/finalize-pricing -H "x-tenant-id: acme" -H "Authorization: Bearer <ownerAccessToken>"
 ```
 
-## Adding another provider
+**SMS / text messaging** (works out of the box with the default `console`
+provider -- no account or credentials needed, it just logs):
+
+```bash
+# 1. Text a customer about a job:
+curl -X POST localhost:3000/messages -H "x-tenant-id: acme" \
+  -H "Authorization: Bearer <accessToken>" -H 'Content-Type: application/json' \
+  -d '{"customerId":"<customerId>","jobId":"<jobId>","body":"Crew is on the way!"}'
+
+# 2. See the conversation for a customer, or for one specific job:
+curl localhost:3000/customers/<customerId>/messages -H "x-tenant-id: acme" -H "Authorization: Bearer <accessToken>"
+curl localhost:3000/jobs/<jobId>/messages -H "x-tenant-id: acme" -H "Authorization: Bearer <accessToken>"
+
+# 3. Simulate the customer replying (this is what a real provider's
+#    webhook would call -- no auth, matched to a tenant+customer by
+#    phone number):
+curl -X POST localhost:3000/webhooks/sms/console/inbound \
+  -H 'Content-Type: application/json' \
+  -d '{"from":"<customerPhoneNumber>","to":"<yourSmsFromNumber>","text":"Sounds good, thanks!"}'
+
+# 4. Switch SMS providers -- edit .env: SMS_PROVIDER=twilio,
+#    TWILIO_ACCOUNT_SID=..., TWILIO_AUTH_TOKEN=..., npm install twilio,
+#    restart. None of the commands above change.
+```
+
+## Adding another OAuth provider
+
+(For adding another SMS provider instead, see "SMS / text messaging"
+above -- that's a one-file adapter, not a passport strategy.)
 
 1. `npm install passport-<provider>`
 2. Add a `passport.use('<provider>', new Strategy(...))` block in
@@ -749,11 +881,12 @@ issuance are provider-agnostic.
 
 `src/models/db.js`, `Tenant.js`, `User.js`, `Customer.js`, `Opportunity.js`,
 `Job.js`, `Estimate.js`, `EstimateAcceptance.js`, `TimeEntry.js`,
-`CatalogItem.js`, `EstimateTemplate.js`, `AuditLog.js`, `RolePermissions.js`,
-`RefreshToken.js`, and `TokenBlocklist.js` are the only files that know
-data is in-memory. Replace their internals with calls to your ORM/driver
-of choice (Prisma, Sequelize, a raw driver, etc.) while keeping the same
-method signatures, and nothing else in the app has to change. `RefreshToken`
+`Message.js`, `CatalogItem.js`, `EstimateTemplate.js`, `AuditLog.js`,
+`RolePermissions.js`, `RefreshToken.js`, and `TokenBlocklist.js` are the
+only files that know data is in-memory. Replace their internals with
+calls to your ORM/driver of choice (Prisma, Sequelize, a raw driver,
+etc.) while keeping the same method signatures, and nothing else in the
+app has to change. `RefreshToken`
 in particular should map cleanly to a real table (`tokenHash`, `tenantId`,
 `userId`, `expiresAt`, `revoked`); `TokenBlocklist` maps well to a Redis set
 with per-key TTL if you'd rather not use your primary DB for it.
@@ -775,7 +908,11 @@ of every entry in the tenant on every clock-in -- fine at this app's scale,
 but a real DB should back it with a **partial unique index**
 (`WHERE status = 'active'` on `(tenant_id, user_id)`) so the invariant is
 enforced at the database level too, not just in application code -- the
-same reasoning as the concurrency note on estimate acceptance. Once `User`
+same reasoning as the concurrency note on estimate acceptance.
+`Message.tenantId`/`customerId` should be **nullable columns** (not a
+foreign key requiring a value), matching the "unmatched inbound message
+has no tenant yet" case (see the SMS section above) -- don't model these
+as required relations. Once `User`
 is backed by a real DB, prefer setting `platformAdmin` with a one-off
 script/migration run directly against it over relying on `POST
 /platform-admin/bootstrap-grant` long-term (see "Platform admin" section
@@ -904,3 +1041,36 @@ above).
   live view. Re-run finalize-pricing logic manually (or add an "un-finalize"
   action) if you need to correct a mistake after the fact -- there isn't
   one today.
+- **One global `SMS_FROM_NUMBER` for every tenant, not a number per
+  tenant.** Simpler and cheaper for a first cut, but it's why inbound
+  messages need phone-number matching at all, and why that matching can
+  produce `unmatched`/`ambiguous` messages -- see the SMS section above.
+  A real multi-tenant SaaS deployment serving unrelated businesses should
+  eventually move to a number (and possibly a provider account) per
+  tenant, which would let a webhook's `to` number resolve the tenant
+  directly and make this whole category of message impossible rather than
+  something to reconcile by hand.
+- **Only one set of SMS provider credentials for the whole app instance**
+  (env vars), not per-tenant BYO-provider credentials. Per-tenant
+  credentials would need encrypted storage at rest (a real secrets manager
+  or an encrypted DB column, not a plain column) -- a meaningfully bigger
+  security surface than this version takes on. The provider abstraction
+  itself (the actual "no vendor lock-in" mechanism) doesn't change either
+  way; only where the credentials live would.
+- **Webhook signature verification depth varies by provider** -- see each
+  adapter's own file comment for exactly how far it goes (Twilio delegates
+  to the SDK's own helper and is the most trustworthy; Telnyx's Ed25519
+  check is implemented with Node's built-in crypto and round-trip tested
+  against a real keypair; Plivo/Bird are best-effort HMAC worth
+  double-checking against current docs; AWS SNS has no webhooks at all).
+  Turn on `SMS_WEBHOOK_STRICT_VERIFICATION=true` once you've confirmed
+  your chosen provider's verification actually passes for real traffic --
+  don't run permissive mode in production indefinitely.
+- **The SMS webhook rate limiter is in-memory and per-process**, the same
+  caveat already noted for the public-estimate rate limiter -- fine for a
+  single instance, move to Redis if you run more than one.
+- **No outbound message queue or retry.** A `sendMessage` call makes one
+  attempt; if the provider's API call itself fails (not a later delivery
+  failure, an immediate error), that's recorded as `status: 'failed'` and
+  nothing retries it automatically. Add a queue (even a simple one) if
+  you need retry/backoff for transient provider errors.

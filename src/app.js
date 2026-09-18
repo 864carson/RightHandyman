@@ -18,6 +18,8 @@ const estimateTemplateRoutes = require('./routes/estimateTemplate');
 const publicEstimateRoutes = require('./routes/publicEstimate');
 const platformAdminRoutes = require('./routes/platformAdmin');
 const timeEntryRoutes = require('./routes/timeEntry');
+const messageRoutes = require('./routes/message');
+const smsWebhookRoutes = require('./routes/smsWebhook');
 
 /**
  * Builds and returns the Express app without starting a listener, so tests
@@ -31,6 +33,11 @@ function createApp() {
   app.use(cors());
   app.use(morgan(process.env.NODE_ENV === 'test' ? 'dev' : 'combined', { skip: () => process.env.NODE_ENV === 'test' }));
   app.use(express.json());
+  // Twilio/Plivo (and some other providers) POST webhooks as
+  // application/x-www-form-urlencoded, not JSON -- needed for
+  // routes/smsWebhook.js to receive them parsed the same way req.body is
+  // used everywhere else in this app.
+  app.use(express.urlencoded({ extended: false }));
   app.use(cookieParser());
 
   // Session is only needed to support passport's OAuth handshake state;
@@ -64,6 +71,10 @@ function createApp() {
   // tenantResolver (see routes/platformAdmin.js for why).
   app.use('/platform-admin', platformAdminRoutes);
   app.use('/time-entries', timeEntryRoutes);
+  app.use('/messages', messageRoutes);
+  // Public, unauthenticated SMS provider webhooks -- see
+  // routes/smsWebhook.js for why this has no tenantResolver/requireAuth.
+  app.use('/webhooks/sms', smsWebhookRoutes);
 
   // 404 handler
   app.use((req, res) => {
