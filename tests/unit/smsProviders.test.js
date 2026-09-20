@@ -228,7 +228,11 @@ describe('TwilioProvider', () => {
 describe('BirdProvider', () => {
   test('send() throws a clear install message when "messagebird" is not installed', async () => {
     const provider = new BirdProvider({ accessKey: 'x' });
-    await expect(provider.send({ to: '+1', from: '+1', text: 'hi' })).rejects.toThrow(/npm install messagebird/);
+    expect(() =>
+      provider.send({ to: '+1', from: '+1', text: 'hi' })
+    ).toThrow(
+      'The "messagebird" package is not installed. Run: npm install messagebird'
+    );
   });
 
   test('parseInboundWebhook / parseStatusWebhook use Bird\'s field names', () => {
@@ -264,7 +268,7 @@ describe('AwsSnsProvider', () => {
 
   test('send() throws a clear install message when "@aws-sdk/client-sns" is not installed', async () => {
     const provider = new AwsSnsProvider({ region: 'us-east-1' });
-    await expect(provider.send({ to: '+1', from: '+1', text: 'hi' })).rejects.toThrow(/npm install @aws-sdk\/client-sns/);
+    expect(() => provider.send({ to: '+1', from: '+1', text: 'hi' })).rejects.toThrow(/npm install @aws-sdk\/client-sns/);
   });
 
   test('send() throws clearly when AWS_REGION is missing', async () => {

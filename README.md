@@ -1,4 +1,4 @@
-# Multi-Tenant Auth Base App
+# DrainBid API, Web and Mobile Apps
 
 A Node.js/Express starter for multi-tenant apps with OAuth login (Google
 "Gmail" login + GitHub as a second example provider) and JWT-based API auth.
@@ -12,7 +12,7 @@ Built to be extended, not to be a finished product.
 - **In-memory repository layer** – swap for Postgres/Mongo/etc. later (see below)
 - **Jest + Supertest** – unit and integration tests
 
-## How multi-tenancy works
+## How multi-tenancy works`
 
 - Every `User` has a `tenantId` and a `role` (`owner` | `admin` | `member`).
   The first user ever created for a tenant automatically becomes `owner`;
